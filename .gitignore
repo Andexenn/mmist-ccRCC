@@ -1,0 +1,45 @@
+# --- Python & System ---
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+Thumbs.db
+
+# --- Virtual Environment (Môi trường ảo) ---
+# Tùy bạn đặt tên venv là gì thì bỏ comment dòng đó
+venv/
+.venv/
+env/
+.env
+
+# --- IDE / Editor Settings ---
+.idea/
+.vscode/
+*.swp
+.ipynb_checkpoints/
+
+# --- Project Data (QUAN TRỌNG) ---
+# Không commit dữ liệu y tế lên git vì lý do bảo mật và kích thước file
+data/
+*.csv
+*.xlsx
+# Nếu muốn giữ lại file example.csv nhỏ thì dùng: !data/example.csv
+
+# --- Checkpoints & Models ---
+# File model .pth thường rất nặng (vài trăm MB đến GB), không nên push lên git
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.h5
+
+# --- Logs & Outputs ---
+# Bỏ qua các file log training hoặc Tensorboard
+runs/
+logs/
+output/
+wandb/
+
+# --- Configs (Optional) ---
+# Nếu file config chứa key/password bí mật thì bỏ comment dòng dưới
+# configs/secret.yaml
