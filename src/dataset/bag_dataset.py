@@ -30,6 +30,32 @@ class FeatureBagDataset(Dataset):
         self.df = df[df['Split'] == split].reset_index(drop=True)
         self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
 
+    def _apply_oversample(self):
+        """
+        Oversampling minority class(death at 12 months)
+        MRI(16x), CT/WSI(8x)
+        """
+
+        if self.modality == 'MRI':
+            oversample_factor = 16
+        else:
+            oversample_factor = 8
+
+        minority_class = self.df[self.df['vital_status_12'] == 1]
+        majority_class = self.df[self.df['vital_status_12'] == 0]
+
+        minority_oversampled = pd.concat([minority_class] * oversample_factor, ignore_index=True)
+
+        self.df = pd.concat([majority_class, minority_oversampled], ignore_index=True)
+        self.df = self.df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        logger.info(
+            "[%s] Oversampling applied: Minority class replicated %sx. Final dataset size: %s",
+            self.modality,
+            oversample_factor,
+            len(self.df)
+        )
+
     def __len__(self):
         return len(self.df)
 
@@ -60,15 +86,22 @@ class FeatureBagDataset(Dataset):
             logger.error("[ERR]:: %s does not exist.", bag_folder)
 
         if len(feature_list) > 0:
-            features = torch.cat(feature_list)
             mask = 1
         else:
             feat_dim = 1024 if self.modality == 'WSI' else 512
-            features = torch.zeros((1, feat_dim)).float()
+            feature_list = torch.zeros((1, feat_dim)).float()
             mask = 0
 
-        return patient_id, features, label, torch.tensor(mask).long()
+        return patient_id, feature_list, label, torch.tensor(mask).long()
 
+def collate_mil(batch):
+    """
+    Custom collate function to handle List of Tensors with variable shapes
+    Since batch_size=1, we just extract the first element.
+    """
+    elem = batch[0]
+    patient_id, feature_list, label, mask = elem
+    return patient_id, feature_list, label, mask
 
 def get_mil_dataloader(
     clinical_file: str,
@@ -87,6 +120,7 @@ def get_mil_dataloader(
         shuffle=shuffle,
         batch_size=batch_size,
         num_workers=num_workers,
+        collate_fn=collate_mil,
         pin_memory=True
     )
 
