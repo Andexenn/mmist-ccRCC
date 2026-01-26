@@ -19,7 +19,7 @@ class ReconstructEncoder(nn.Module):
         """
         logger.info('Reconstruct encoder is starting...')
         super().__init__()
-        self.mlp_module = MLP(input_dim, [hidden_dim, hidden_dim])            
+        self.mlp_module = MLP(input_dim, [hidden_dim, hidden_dim])
 
     def forward(self, feature: torch.Tensor):
         """
@@ -32,4 +32,3 @@ class ReconstructEncoder(nn.Module):
 
         encoded_feature = self.mlp_module(feature)
         return encoded_feature
-

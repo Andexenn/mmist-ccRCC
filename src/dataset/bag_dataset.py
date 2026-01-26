@@ -30,6 +30,9 @@ class FeatureBagDataset(Dataset):
         self.df = df[df['Split'] == split].reset_index(drop=True)
         self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
 
+        if split == 'train':
+            self._apply_oversample()
+
     def _apply_oversample(self):
         """
         Oversampling minority class(death at 12 months)
@@ -88,8 +91,7 @@ class FeatureBagDataset(Dataset):
         if len(feature_list) > 0:
             mask = 1
         else:
-            feat_dim = 1024 if self.modality == 'WSI' else 512
-            feature_list = torch.zeros((1, feat_dim)).float()
+            feature_list = torch.zeros((1, 768)).float()
             mask = 0
 
         return patient_id, feature_list, label, torch.tensor(mask).long()
