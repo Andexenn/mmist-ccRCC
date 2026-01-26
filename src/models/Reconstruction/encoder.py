@@ -1,30 +1,34 @@
-import os 
-import logging 
+import os
+import logging
 
 import torch.nn as nn
-import numpy as np 
+import torch
+import numpy as np
+
+from models.Reconstruction.MLP_block import MLP
 
 logger = logging.getLogger(__name__)
 
 class ReconstructEncoder(nn.Module):
     """ The encoder for reconstruct component in the pipeline """
-    def __init__(self, wsi_feat, ct_feat, mri_feat, drop_out: float = 0.5):
+    def __init__(self, input_dim: int = 128, hidden_dim: int = 128):
         """
         Args:
-            wsi_feat (x, 768): WSI feature
-            ct_feat (x, 768): CT feature
-            mri_feat (x, 768): MRI feature
+            modality_feature
             drop_out (float): regularization
         """
+        super().__init__()
+        self.mlp_module = MLP(input_dim, [hidden_dim, hidden_dim])            
 
-        self.wsi_feat = wsi_feat
-        self.ct_feat = ct_feat
-        self.mri_feat = mri_feat
-        self.drop_out = drop_out 
-
-    def encode(self):
+    def forward(self, feature: torch.Tensor):
         """
         Returns: feature with lower dimension
-        """
+        """ 
 
-        
+        if self.training:
+            noise = torch.randn_like(feature) * 0.01
+            feature = feature + noise
+
+        encoded_feature = self.mlp_module(feature)
+        return encoded_feature
+

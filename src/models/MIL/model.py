@@ -7,7 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 
-from attention_pooling import GatedAttentionPooling
+from models.MIL.gated_attention_pooling import GatedAttentionPooling
 from dataset.bag_dataset import get_mil_dataloader
 
 logger = logging.getLogger(__name__)
@@ -131,8 +131,7 @@ class MILModel(nn.Module):
     def forward_single_bag(self, feature_list: List[torch.Tensor], modality:str = 'WSI', add_noise: bool = False):
         """ Compute the selected feature """
         if add_noise:
-            noise = torch.randn_like(feature_list) * 0.01
-            feature_list += noise
+            feature_list = [f + (torch.rand_like(f) * 0.01) for f in feature_list]
 
         if modality == 'WSI':
             survival_prob, selected_feature, selected_idx = self.wsi_mil(feature_list)
