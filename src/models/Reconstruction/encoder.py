@@ -17,6 +17,7 @@ class ReconstructEncoder(nn.Module):
             modality_feature
             drop_out (float): regularization
         """
+        logger.info('Reconstruct encoder is starting...')
         super().__init__()
         self.mlp_module = MLP(input_dim, [hidden_dim, hidden_dim])            
 
