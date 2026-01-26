@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 
+from attention_pooling import GatedAttentionPooling
 from dataset.bag_dataset import get_mil_dataloader
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,8 @@ class SingleMIL(nn.Module):
         """
         super().__init__()
 
+        self.patch_attention = GatedAttentionPooling(input_dim)
+
         layers = []
         prev_dim = input_dim
 
@@ -35,23 +38,32 @@ class SingleMIL(nn.Module):
 
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, bag_features):
+    def forward(self, patient_images: List[torch.Tensor]):
         """
         Args:
-            bag_faetures (tensor): all instances of 1 modality for one patient
+            bag_faetures (List[torch.Tensors]): all instances of 1 modality for one patient
 
         Return:
             max_prob (float): highest survival probability among all instances
             max_features (feature_dim, ): the feature of the selected instance
         """
 
+        image_embeds = []
+
+        for img in patient_images:
+            img = img.to(next(self.parameters()).device)
+            compressed_img, _ = self.patch_attention(img)
+            image_embeds.append(compressed_img)
+
+        bag_features = torch.cat(image_embeds, dim=0)
         instances_probs = self.mlp(bag_features)
 
-        max_idx = torch.argmax(instances_probs)
-        max_prob = instances_probs[max_idx]
-        max_features = bag_features[max_idx]
+        max_ids = torch.argmax(instances_probs)
+        max_probs = instances_probs[max_ids]
+        max_features = bag_features[max_ids]
 
-        return max_prob, max_features, max_idx
+        return max_ids, max_probs, max_features 
+
 
 class MILModel(nn.Module):
     """ MIL Model for feature selection as described in the paper """
@@ -116,25 +128,25 @@ class MILModel(nn.Module):
 
         return WSI_dataloader, CT_dataloader, MRI_dataloader
 
-    def forward_single_bag(self, bag_features, modality:str = 'WSI', add_noise: bool = False):
+    def forward_single_bag(self, feature_list: List[torch.Tensor], modality:str = 'WSI', add_noise: bool = False):
         """ Compute the selected feature """
-        if add_noise and self.training:
-            noise = torch.randn_like(bag_features) * 0.01
-            bag_features += noise
+        if add_noise:
+            noise = torch.randn_like(feature_list) * 0.01
+            feature_list += noise
 
         if modality == 'WSI':
-            survival_prob, selected_feature, selected_idx = self.wsi_mil(bag_features)
+            survival_prob, selected_feature, selected_idx = self.wsi_mil(feature_list)
         elif modality == 'MRI':
-            survival_prob, selected_feature, selected_idx = self.mri_mil(bag_features)
+            survival_prob, selected_feature, selected_idx = self.mri_mil(feature_list)
         elif modality == 'CT':
-            survival_prob, selected_feature, selected_idx = self.ct_mil(bag_features)
+            survival_prob, selected_feature, selected_idx = self.ct_mil(feature_list)
         else:
             logger.error('%s is not suitable', modality)
             raise ValueError(f'Unknown modality: {modality}')
 
         return survival_prob, selected_feature, selected_idx
 
-    def select_best_features_for_case(self, case_id: str, split: str='train'):
+    def select_best_features_for_case(self, case_id: str, split: str = 'train'):
         """
         Select the best features for each modality of that patient
         Args:
@@ -146,64 +158,42 @@ class MILModel(nn.Module):
         """
 
         self.eval()
-        WSI_dataloader, CT_dataloader, MRI_dataloader = self._get_dataloader(split, shuffle=False)
+        dataloaders = self._get_dataloader(split, shuffle=False)
 
-        results: Dict[str, Any] = {
-            'WSI': torch.zeros(),
-            'MRI': torch.zeros(),
-            'CT': torch.zeros()
+        results: Dict[str, Any] = {'WSI': None, 'MRI': None, 'CT': None}
+
+        modality_map = {
+            'WSI': dataloaders[0],
+            'CT':  dataloaders[1],
+            'MRI': dataloaders[2]
         }
 
-        # Process WSI
-        for patient_id, features, label, mask in WSI_dataloader:
-            if patient_id[0] == case_id:
-                # features shape: (1, num_instances, feature_dim)
-                features = features.squeeze(0).to(self.device)  # (num_instances, feature_dim)
+        def process_modality(modality: str, loader):
+            for patient_id, features_list, label, mask in loader:
+                if patient_id == case_id:
+                    if mask.item() == 1:
+                        with torch.no_grad():
+                            use_noise = (split == 'train')
+                            prob, selected_feat, idx = self.forward_single_bag(features_list, modality, add_noise=use_noise)
 
-                if mask.item() == 1:  # Valid features exist
-                    with torch.no_grad():
-                        prob, selected_feat, idx = self.forward_single_bag(features, 'WSI', add_noise=False)
+                            return {
+                                'features': selected_feat.cpu(),
+                                'probability': prob.item(),
+                                'selected_idx': idx.item(),
+                                'label': label.item()
+                            }
+                    return None
+            return None 
 
-                    results['WSI'] = {
-                        'features': selected_feat.cpu(),
-                        'probability': prob.item(),
-                        'selected_index': idx.item(),
-                        'label': label.item()
-                    }
-                break
-
-        # Process CT
-        for patient_id, features, label, mask in CT_dataloader:
-            if patient_id[0] == case_id:
-                features = features.squeeze(0).to(self.device)
-
-                if mask.item() == 1:
-                    with torch.no_grad():
-                        prob, selected_feat, idx = self.forward_single_bag(features, 'CT', add_noise=False)
-
-                    results['CT'] = {
-                        'features': selected_feat.cpu(),
-                        'probability': prob.item(),
-                        'selected_index': idx.item(),
-                        'label': label.item()
-                    }
-                break
-
-        # Process MRI
-        for patient_id, features, label, mask in MRI_dataloader:
-            if patient_id[0] == case_id:
-                features = features.squeeze(0).to(self.device)
-
-                if mask.item() == 1:
-                    with torch.no_grad():
-                        prob, selected_feat, idx = self.forward_single_bag(features, 'MRI', add_noise=False)
-
-                    results['MRI'] = {
-                        'features': selected_feat.cpu(),
-                        'probability': prob.item(),
-                        'selected_index': idx.item(),
-                        'label': label.item()
-                    }
-                break
-
+        for mod_name, loader in modality_map.items():
+            res = process_modality(mod_name, loader)
+            if res is not None:
+                results[mod_name] = res
+            else:
+                 results[mod_name] = {
+                    'features': torch.zeros((1, self.dim)),
+                    'probability': 0.0,
+                    'selected_index': -1,
+                    'label': -1
+                }
         return results
