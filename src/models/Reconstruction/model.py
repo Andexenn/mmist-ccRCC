@@ -46,7 +46,7 @@ class ReconstructionModel(nn.Module):
                 if torch.sum(torch.abs(emb)).item() > 1e-6
             ]
 
-            if len(available_indices) > 1:
+            if len(available_indices) >= 3:
                 drop_idx = random.choice(available_indices)
                 embeddings[drop_idx] = torch.zeros_like(embeddings[drop_idx])
                 
@@ -54,7 +54,6 @@ class ReconstructionModel(nn.Module):
 
         latent_vector = self.cross_modal([wsi_emb, mri_emb, ct_emb, cli_emb])
 
-        #TODO: watch again, how to separate those features to 4 modalities
         rec_wsi = self.wsi_decoder(latent_vector)
         rec_ct = self.ct_decoder(latent_vector)
         rec_mri = self.mri_decoder(latent_vector)

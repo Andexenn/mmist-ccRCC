@@ -92,12 +92,10 @@ class MILModel(nn.Module):
         self.dim = dim
         self.loss_fn = loss_fn
 
-        # init 3 mil system
         self.wsi_mil = SingleMIL(dim, [512, 256, 128])
         self.mri_mil = SingleMIL(dim, [256, 128])
         self.ct_mil = SingleMIL(dim, [256, 128])
 
-        # move to device
         self.to(device)
 
     def _get_dataloader(self, split: str = 'train', shuffle: bool = True):
