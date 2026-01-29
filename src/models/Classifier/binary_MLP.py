@@ -7,6 +7,10 @@ import pandas as pd
 
 class BinaryMLP(nn.Module):
     def __init__(self, input_dim: int = 128):
+        """
+        Args:
+            input_dim (int): The input dimension
+        """
         super().__init__()
 
         self.mlp = nn.Sequential(
