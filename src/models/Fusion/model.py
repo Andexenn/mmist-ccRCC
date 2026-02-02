@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from typing import List
 
-from models.Classifier.early_fusion import EarlyFusion
-from models.Classifier.late_fusion import LateFusion
+from models.Fusion.early_fusion import EarlyFusion
+from models.Fusion.late_fusion import LateFusion
 
 class Fusion(nn.Module):
     def __init__(self, 

@@ -99,7 +99,7 @@ def get_reconstruct_dataloader(
     shuffle: bool = True 
 ):
     """ Reconstruction loader """
-    dataset = ReconstructDataset(clinical_dir=clinical_file, feature_dir, split)
+    dataset = ReconstructDataset(clinical_file, feature_dir, split)
 
     loader = DataLoader(
         dataset,
@@ -111,5 +111,3 @@ def get_reconstruct_dataloader(
     )
 
     return loader
-
-

@@ -1,7 +1,7 @@
 import torch 
 import torch.nn as nn
 from typing import List
-from models.Classifier.binary_MLP import BinaryMLP
+from models.Fusion.binary_MLP import BinaryMLP
 
 class EarlyFusion(nn.Module):
     def __init__(self, fusion_type: str = 'mean', input_dim: int = 768, num_modalities: int = 4):

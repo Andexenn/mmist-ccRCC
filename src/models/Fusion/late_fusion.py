@@ -6,7 +6,7 @@ import torch.nn as nn
 import numpy as np 
 import pandas as pd 
 
-from models.Classifier.binary_MLP import BinaryMLP
+from models.Fusion.binary_MLP import BinaryMLP
 from utils.metrics import calc_bacc
 
 class LateFusion(nn.Module):
