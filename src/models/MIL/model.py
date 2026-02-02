@@ -49,9 +49,10 @@ class SingleMIL(nn.Module):
         """
 
         image_embeds = []
+        device = next(self.parameters()).device
 
         for img in patient_images:
-            img = img.to(next(self.parameters()).device)
+            img = img.to(device)
             compressed_img, _ = self.patch_attention(img)
             image_embeds.append(compressed_img)
 
@@ -72,8 +73,7 @@ class MILModel(nn.Module):
         feature_dir: str,
         clinical_dir: str,
         device: str = 'cuda',
-        dim: int = 768,
-        loss_fn: str = "weighted BCE"
+        dim: int = 768
     ):
         """
         Args:
@@ -88,9 +88,7 @@ class MILModel(nn.Module):
 
         self.feature_dir = feature_dir
         self.clinical_dir = clinical_dir
-        self.df = pd.read_csv(self.clinical_dir)
         self.dim = dim
-        self.loss_fn = loss_fn
 
         self.wsi_mil = SingleMIL(dim, [512, 256, 128])
         self.mri_mil = SingleMIL(dim, [256, 128])

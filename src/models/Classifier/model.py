@@ -1,6 +1,6 @@
 import torch 
 import torch.nn as nn
-from typing import List, Optional
+from typing import List
 
 from models.Classifier.early_fusion import EarlyFusion
 from models.Classifier.late_fusion import LateFusion

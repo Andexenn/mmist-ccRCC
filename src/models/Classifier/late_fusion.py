@@ -19,7 +19,7 @@ class LateFusion(nn.Module):
         
         self.fusion_weights = nn.Parameter(torch.ones(num_modalities))
 
-    def forward(self, feature_list, masks, mode: str = 'LW', BAcc_mods=None):
+    def forward(self, feature_list, masks, mode: str = 'LW', BAcc_mods: List[torch.Tensor] = []):
         if mode == 'LW':
             return self._fuse_LW(feature_list, masks)
         elif mode == 'WS':

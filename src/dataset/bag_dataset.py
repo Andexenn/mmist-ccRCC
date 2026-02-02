@@ -20,6 +20,7 @@ class FeatureBagDataset(Dataset):
             feature_dir (str): The feature folder's path
             modality (str): 'CT' or 'MRI' or 'WSI'
             split (str): 'train' or 'test'
+            type (str): 'MIL' or 'Reconstruction' or 'Fusion'
         """
 
         self.clinical_file = clinical_file
@@ -33,30 +34,25 @@ class FeatureBagDataset(Dataset):
         if split == 'train':
             self._apply_oversample()
 
+
     def _apply_oversample(self):
-        """
-        Oversampling minority class(death at 12 months)
-        MRI(16x), CT/WSI(8x)
+        """ 
+        Oversampling minority class (death at 12 months) with 6x 
         """
 
-        if self.modality == 'MRI':
-            oversample_factor = 16
-        else:
-            oversample_factor = 8
+        oversample_factor = 6
 
         minority_class = self.df[self.df['vital_status_12'] == 1]
         majority_class = self.df[self.df['vital_status_12'] == 0]
 
-        minority_oversampled = pd.concat([minority_class] * oversample_factor, ignore_index=True)
+        minority_oversampled = pd.concat([minority_class] * oversample_factor, ignore_index = True)
 
         self.df = pd.concat([majority_class, minority_oversampled], ignore_index=True)
         self.df = self.df.sample(frac=1, random_state=42).reset_index(drop=True)
 
         logger.info(
-            "[%s] Oversampling applied: Minority class replicated %sx. Final dataset size: %s",
-            self.modality,
-            oversample_factor,
-            len(self.df)
+            "Oversampling for %s with 6x at minority class",
+            self.type
         )
 
     def __len__(self):
@@ -99,7 +95,7 @@ class FeatureBagDataset(Dataset):
 def collate_mil(batch):
     """
     Custom collate function to handle List of Tensors with variable shapes
-    Since batch_size=1, we just extract the first element.
+    Since batch_size=1, just extract the first element.
     """
     elem = batch[0]
     patient_id, feature_list, label, mask = elem
@@ -114,7 +110,7 @@ def get_mil_dataloader(
     batch_size: int = 1,
     shuffle: bool = True
 ):
-    """MIL loader"""
+    """ MIL loader """
     dataset = FeatureBagDataset(clinical_file, feature_dir, modality, split)
 
     loader = Dataloader(
