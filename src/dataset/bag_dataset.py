@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, Dataloader
+from torch.utils.data import Dataset, DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class FeatureBagDataset(Dataset):
 
         logger.info(
             "Oversampling for %s with 6x at minority class",
-            self.type
+            self.modality
         )
 
     def __len__(self):
@@ -87,7 +87,7 @@ class FeatureBagDataset(Dataset):
         if len(feature_list) > 0:
             mask = 1
         else:
-            feature_list = torch.zeros((1, 768)).float()
+            feature_list = [torch.zeros((1, 768)).float()]
             mask = 0
 
         return patient_id, feature_list, label, torch.tensor(mask).long()
@@ -113,7 +113,7 @@ def get_mil_dataloader(
     """ MIL loader """
     dataset = FeatureBagDataset(clinical_file, feature_dir, modality, split)
 
-    loader = Dataloader(
+    loader = DataLoader(
         dataset,
         shuffle=shuffle,
         batch_size=batch_size,

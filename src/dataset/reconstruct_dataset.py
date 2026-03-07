@@ -84,7 +84,8 @@ class ReconstructDataset(Dataset):
             'wsi_bag': wsi_bag, 'wsi_mask': wsi_mask,
             'ct_bag': ct_bag,   'ct_mask': ct_mask,
             'mri_bag': mri_bag, 'mri_mask': mri_mask,
-            'cli_feat': cli_feat, 'cli_mask': cli_mask
+            'cli_feat': cli_feat, 'cli_mask': cli_mask,
+            'label': torch.tensor(int(row['vital_status_12'])).long()
         }
     
 def collate(batch):

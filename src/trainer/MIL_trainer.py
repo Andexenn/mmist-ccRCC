@@ -2,8 +2,6 @@ import os
 import logging
 import copy
 
-import numpy as np 
-import sklearn
 import torch
 import torch.nn as nn 
 import torch.optim as optim
@@ -17,9 +15,9 @@ def train_single_modality(
     train_loader,
     val_loader,
     output_dir,
-    n_epochs, 
     device,
-    lr: float,
+    lr: float = 1e-3,
+    n_epochs: int  = 100, 
     death_weight: float = 1.0
 ): 
     """ Train a single modality (WSI, CT, MRI) """
@@ -50,7 +48,7 @@ def train_single_modality(
     patience_limit = 20
     patience_counter = 0
     best_val_loss = float('inf')
-    best_model_state = None 
+    best_model_state = None
 
     for epoch in range(n_epochs):
         #training phase
@@ -59,9 +57,9 @@ def train_single_modality(
         running_loss = 0.0
         train_batches = 0
 
-        for patient_id, feature_list, label, mask, in train_loader:
+        for patient_id, feature_list, label, mask in train_loader:
             if mask.item() == 0:
-                continue 
+                continue
 
             feature_list = [f.to(device) for f in feature_list]
             label = label.float().to(device).unsqueeze(0)

@@ -63,7 +63,7 @@ class SingleMIL(nn.Module):
         max_probs = instances_probs[max_ids]
         max_features = bag_features[max_ids]
 
-        return max_ids, max_probs, max_features 
+        return max_probs, max_features, max_ids
 
 
 class MILModel(nn.Module):
