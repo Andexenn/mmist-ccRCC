@@ -1,5 +1,13 @@
+"""
+Pipeline (Stage 2) Trainer — End-to-End Finetuning
+====================================================
+After Stage 1 trains each module separately, Stage 2 unfreezes all parameters
+and finetunes the entire pipeline (MIL → Reconstruction → Fusion) jointly
+with a low learning rate (lr=1e-5).
+"""
+
 import os
-import logging
+import time
 from typing import List
 
 import torch
@@ -7,12 +15,15 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
+from configs.logging_config import get_logger
+from configs.paths import TB_PIPELINE_DIR, CHECKPOINT_DIR, CKPT_PIPELINE
 from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
 from dataset.reconstruct_dataset import get_reconstruct_dataloader
 
-logger = logging.getLogger(__name__)
+logger = get_logger('stage2_trainer')
+
 
 def train_pipeline(
     mil_model: MILModel,
@@ -20,7 +31,6 @@ def train_pipeline(
     fusion_model: Fusion,
     clinical_file: str,
     feature_dir: str,
-    output_dir: str,
     bacc_mods: List = [1.0, 1.0, 1.0, 1.0],
     epochs: int = 100,
     lr: float = 1e-5,
@@ -28,47 +38,51 @@ def train_pipeline(
 ):
     """
     Stage 2: Finetune the entire pipeline end-to-end.
-    Unfreeze all modules and train with a single optimizer.
+    All modules are unfrozen and trained jointly with a single optimizer.
     """
-    logger.info("=== Starting Stage 2: Finetuning Pipeline End-to-End ===")
-    os.makedirs(output_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=os.path.join(output_dir, 'logs_pipeline'))
-    
+    logger.info("=" * 60)
+    logger.info("STAGE 2: End-to-End Pipeline Finetuning")
+    logger.info("  epochs=%d | lr=%.2e | death_weight=%.1f", epochs, lr, death_weight)
+    logger.info("=" * 60)
+
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    writer = SummaryWriter(log_dir=TB_PIPELINE_DIR)
     device = next(fusion_model.parameters()).device
 
-    # Unfreeze all models
-    mil_model.train()
-    for param in mil_model.parameters():
-        param.requires_grad = True
+    # ─── Unfreeze ALL models ─────────────────────────────────────
+    for model, name in [(mil_model, 'MIL'), (recon_model, 'Reconstruction'), (fusion_model, 'Fusion')]:
+        model.train()
+        for param in model.parameters():
+            param.requires_grad = True
+        n_params = sum(p.numel() for p in model.parameters())
+        logger.info("%s unfrozen (%d params)", name, n_params)
 
-    recon_model.train()
-    for param in recon_model.parameters():
-        param.requires_grad = True
+    total_params = (sum(p.numel() for p in mil_model.parameters()) +
+                    sum(p.numel() for p in recon_model.parameters()) +
+                    sum(p.numel() for p in fusion_model.parameters()))
+    logger.info("Total trainable params: %d", total_params)
 
-    fusion_model.train()
-    for param in fusion_model.parameters():
-        param.requires_grad = True
-
-    # Dataloaders
+    # ─── DataLoaders ─────────────────────────────────────────────
     train_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='train')
     val_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='val', shuffle=False)
 
-    # Gather all parameters
+    # ─── Optimizer & Scheduler ───────────────────────────────────
     all_params = list(mil_model.parameters()) + list(recon_model.parameters()) + list(fusion_model.parameters())
-
-    # Optimizer, Scheduler, Loss (as per specs: AdamW lr=1e-5, patience=5)
     optimizer = optim.AdamW(all_params, lr=lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        optimizer, mode='min', factor=0.5, patience=5
     )
     criterion = nn.BCELoss(reduction='none')
+    logger.info("Optimizer: AdamW(lr=%.2e, wd=1e-5) | Scheduler: ReduceLROnPlateau(factor=0.5, patience=5)", lr)
 
-    # Early stopping (patience=20)
+    # ─── Training Loop ───────────────────────────────────────────
     best_val_loss = float('inf')
     patience_limit = 20
     patience_counter = 0
 
     for epoch in range(epochs):
+        epoch_start = time.time()
+
         mil_model.train()
         recon_model.train()
         fusion_model.train()
@@ -81,28 +95,28 @@ def train_pipeline(
             ct_bag  = [f.to(device) for f in data['ct_bag']]
             mri_bag = [f.to(device) for f in data['mri_bag']]
             cli_feat = data['cli_feat'].to(device)
-            
+
             if 'label' in data:
                 label = data['label'].float().to(device)
             else:
                 continue
 
             masks = [
-                data['wsi_mask'].to(device),
-                data['ct_mask'].to(device),
-                data['mri_mask'].to(device),
-                data['cli_mask'].to(device)
+                torch.tensor([[data['wsi_mask']]]).float().to(device),
+                torch.tensor([[data['ct_mask']]]).float().to(device),
+                torch.tensor([[data['mri_mask']]]).float().to(device),
+                torch.tensor([[data['cli_mask']]]).float().to(device),
             ]
 
             optimizer.zero_grad(set_to_none=True)
 
-            # === MIL Selection ===
+            # ─── MIL Selection (with gradient) ───────────────────
             _, wsi_best, _ = mil_model.forward_single_bag(wsi_bag, modality='WSI', add_noise=True)
-            _, ct_best, _ = mil_model.forward_single_bag(ct_bag, modality='CT', add_noise=True)
+            _, ct_best, _  = mil_model.forward_single_bag(ct_bag, modality='CT', add_noise=True)
             _, mri_best, _ = mil_model.forward_single_bag(mri_bag, modality='MRI', add_noise=True)
 
             if wsi_best.dim() == 1: wsi_best = wsi_best.unsqueeze(0)
-            if ct_best.dim() == 1: ct_best = ct_best.unsqueeze(0)
+            if ct_best.dim() == 1:  ct_best = ct_best.unsqueeze(0)
             if mri_best.dim() == 1: mri_best = mri_best.unsqueeze(0)
             if cli_feat.dim() == 1: cli_feat = cli_feat.unsqueeze(0)
 
@@ -111,7 +125,7 @@ def train_pipeline(
             in_mri = mri_best.clone() * masks[2]
             in_cli = cli_feat.clone() * masks[3]
 
-            # === Reconstruction ===
+            # ─── Reconstruction (with gradient) ──────────────────
             rec_wsi, rec_ct, rec_mri, rec_cli = recon_model(in_wsi, in_ct, in_mri, in_cli)
 
             final_wsi = masks[0] * wsi_best + (1 - masks[0]) * rec_wsi
@@ -122,9 +136,8 @@ def train_pipeline(
             feature_list = [final_wsi, final_ct, final_mri, final_cli]
             full_masks = [torch.ones_like(m) for m in masks]
 
-            # === Fusion ===
+            # ─── Fusion (with gradient) ──────────────────────────
             prob = fusion_model(feature_list, full_masks, bacc_mods)
-
             prob = prob.squeeze()
             label = label.squeeze()
 
@@ -132,7 +145,6 @@ def train_pipeline(
             weight = death_weight if label.item() == 0 else 1.0
             loss = (loss_unreduced * weight).mean()
 
-            # End-to-end backprop
             loss.backward()
             optimizer.step()
 
@@ -141,7 +153,7 @@ def train_pipeline(
 
         avg_train_loss = running_loss / train_steps if train_steps > 0 else 0.0
 
-        # === Validation ===
+        # ═══ VALIDATION ══════════════════════════════════════════
         mil_model.eval()
         recon_model.eval()
         fusion_model.eval()
@@ -155,17 +167,17 @@ def train_pipeline(
                 ct_bag  = [f.to(device) for f in data['ct_bag']]
                 mri_bag = [f.to(device) for f in data['mri_bag']]
                 cli_feat = data['cli_feat'].to(device)
-                
+
                 if 'label' in data:
                     label = data['label'].float().to(device)
                 else:
                     continue
 
                 masks = [
-                    data['wsi_mask'].to(device),
-                    data['ct_mask'].to(device),
-                    data['mri_mask'].to(device),
-                    data['cli_mask'].to(device)
+                    torch.tensor([[data['wsi_mask']]]).float().to(device),
+                    torch.tensor([[data['ct_mask']]]).float().to(device),
+                    torch.tensor([[data['mri_mask']]]).float().to(device),
+                    torch.tensor([[data['cli_mask']]]).float().to(device),
                 ]
 
                 _, wsi_best, _ = mil_model.forward_single_bag(wsi_bag, 'WSI', add_noise=False)
@@ -173,7 +185,7 @@ def train_pipeline(
                 _, mri_best, _ = mil_model.forward_single_bag(mri_bag, 'MRI', add_noise=False)
 
                 if wsi_best.dim() == 1: wsi_best = wsi_best.unsqueeze(0)
-                if ct_best.dim() == 1: ct_best = ct_best.unsqueeze(0)
+                if ct_best.dim() == 1:  ct_best = ct_best.unsqueeze(0)
                 if mri_best.dim() == 1: mri_best = mri_best.unsqueeze(0)
                 if cli_feat.dim() == 1: cli_feat = cli_feat.unsqueeze(0)
 
@@ -198,30 +210,43 @@ def train_pipeline(
                 val_steps += 1
 
         avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
+        elapsed = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]['lr']
 
-        logger.info(f"Epoch {epoch+1}/{epochs} | Pipeline Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        # ─── Logging ────────────────────────────────────────────
+        logger.info(
+            "[Epoch %03d/%03d] [Pipeline] train_loss=%.4f | val_loss=%.4f | best_val=%.4f | "
+            "lr=%.2e | patience=%d/%d | time=%.1fs",
+            epoch + 1, epochs,
+            avg_train_loss, avg_val_loss, best_val_loss,
+            current_lr, patience_counter, patience_limit, elapsed
+        )
         writer.add_scalar('Pipeline/Train_Loss', avg_train_loss, epoch)
         writer.add_scalar('Pipeline/Val_Loss', avg_val_loss, epoch)
+        writer.add_scalar('Pipeline/LR', current_lr, epoch)
 
         scheduler.step(avg_val_loss)
 
+        # ─── Checkpointing ──────────────────────────────────────
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-
-            # Save the final best ensemble
+            save_path = os.path.join(CHECKPOINT_DIR, CKPT_PIPELINE)
             torch.save({
                 'mil_state_dict': mil_model.state_dict(),
                 'recon_state_dict': recon_model.state_dict(),
                 'fusion_state_dict': fusion_model.state_dict()
-            }, os.path.join(output_dir, 'best_pipeline.pth'))
-            
-            logger.info("  -> Best Pipeline Checkpoint Saved!")
+            }, save_path)
+            logger.info("  >> Pipeline checkpoint saved: %s (val_loss=%.4f)", save_path, best_val_loss)
         else:
             patience_counter += 1
             if patience_counter >= patience_limit:
-                logger.info("Early stopping triggered in pipeline finetuning.")
+                logger.warning(
+                    "[Pipeline] Early stopping at epoch %d — no improvement for %d epochs "
+                    "(best_val=%.4f, current_val=%.4f)",
+                    epoch + 1, patience_limit, best_val_loss, avg_val_loss
+                )
                 break
 
     writer.close()
-    logger.info("Pipeline Finetuning Complete.")
+    logger.info("STAGE 2: Pipeline Finetuning COMPLETE (best_val=%.4f)", best_val_loss)

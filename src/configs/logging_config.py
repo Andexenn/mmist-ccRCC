@@ -1,40 +1,88 @@
+"""
+Professional Logging Configuration for MMIST-ccRCC Pipeline
+============================================================
+Provides structured, scannable log output for both console and file.
+Uses centralized paths from configs.paths.
+"""
+
 import logging
-from logging.handlers import RotatingFileHandler
 import os
+import sys
+from logging.handlers import RotatingFileHandler
+from configs.paths import FILE_LOG_DIR
 
-def setup_logger(name_log):
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
 
-    # Cấu trúc: [Thời gian] [Tên module] [Level] : Nội dung
-    log_format = logging.Formatter(
-        fmt='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
+def setup_logger(name: str = 'mmist'):
+    """
+    Set up a professional logger with console + file handlers.
+
+    Args:
+        name (str): Logger name (default: 'mmist').
+
+    Returns:
+        logging.Logger: Configured logger instance.
+
+    Usage:
+        from configs.logging_config import setup_logger
+        logger = setup_logger()          # root project logger
+        logger = setup_logger('trainer') # module-specific logger
+    """
+    os.makedirs(FILE_LOG_DIR, exist_ok=True)
+
+    logger = logging.getLogger(name)
+
+    # Avoid adding duplicate handlers on repeated calls
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.DEBUG)
+
+    # ─── Console Handler (INFO+) ─────────────────────────────────
+    # Compact format for quick scanning during training
+    console_fmt = logging.Formatter(
+        fmt='%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_fmt)
+
+    # ─── File Handler (DEBUG+) ───────────────────────────────────
+    # Verbose format with function name and line number for debugging
+    file_fmt = logging.Formatter(
+        fmt='%(asctime)s │ %(levelname)-8s │ %(name)s.%(funcName)s:%(lineno)d │ %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-
-    # 3. Tạo Handler ghi ra File (Lưu lại để tra cứu)
-    # RotatingFileHandler: Tự động cắt file khi > 10MB, giữ lại 5 file cũ nhất
     file_handler = RotatingFileHandler(
-        filename='logs/app.log', 
-        maxBytes=10*1024*1024, # 10MB
+        filename=os.path.join(FILE_LOG_DIR, 'mmist.log'),
+        maxBytes=10 * 1024 * 1024,  # 10 MB
         backupCount=5,
         encoding='utf-8'
     )
-    file_handler.setFormatter(log_format)
-    file_handler.setLevel(logging.DEBUG) # File thì lưu tất cả
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_fmt)
 
-    # 4. Tạo Handler in ra Màn hình (Console)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(log_format)
-    console_handler.setLevel(logging.INFO) # Màn hình chỉ hiện cái quan trọng
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
 
-    # 5. Khởi tạo Logger
-    logger = logging.getLogger(name_log)
-    logger.setLevel(logging.DEBUG)
-    
-    # Add handlers vào logger
-    if not logger.handlers: # Tránh add trùng lặp
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-    
     return logger
+
+
+def get_logger(module_name: str) -> logging.Logger:
+    """
+    Get a child logger under the main 'mmist' hierarchy.
+    This ensures all modules share the same handlers.
+
+    Args:
+        module_name (str): e.g. 'MIL_trainer', 'reconstruction_trainer'
+
+    Returns:
+        logging.Logger: Child logger (e.g. mmist.MIL_trainer)
+
+    Usage:
+        from configs.logging_config import get_logger
+        logger = get_logger(__name__)
+    """
+    # Ensure the root logger is configured
+    setup_logger('mmist')
+    return logging.getLogger(f'mmist.{module_name}')

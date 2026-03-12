@@ -43,3 +43,4 @@ wandb/
 # --- Configs (Optional) ---
 # Nếu file config chứa key/password bí mật thì bỏ comment dòng dưới
 # configs/secret.yaml
+tasks

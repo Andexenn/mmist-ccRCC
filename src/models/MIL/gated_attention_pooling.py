@@ -1,7 +1,7 @@
 import logging 
 
 import torch.nn as nn
-import torch.F as F
+import torch.nn.functional as F
 import torch
 
 logger = logging.getLogger(__name__)

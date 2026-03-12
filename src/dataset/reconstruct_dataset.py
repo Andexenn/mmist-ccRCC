@@ -89,7 +89,12 @@ class ReconstructDataset(Dataset):
         }
     
 def collate(batch):
-    return batch[0]
+    """Custom collate that handles variable-length bags for batch_size >= 1"""
+    if len(batch) == 1:
+        return batch[0]
+    
+    # For batch_size > 1, return list of sample dicts
+    return batch
 
 def get_reconstruct_dataloader(
     clinical_file: str, 

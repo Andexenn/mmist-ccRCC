@@ -1,59 +1,78 @@
-import os 
-import logging
+"""
+MIL Trainer — Stage 1, Step 1
+==============================
+Trains three independent MIL models (WSI, CT, MRI) for 12-month survival prediction.
+Each modality uses per-modality optimizer, scheduler, and epoch count as per Table A.1.
+"""
+
+import os
+import time
 import copy
 
 import torch
-import torch.nn as nn 
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
-logger = logging.getLogger(__name__)
+from configs.logging_config import get_logger
+from configs.paths import TB_MIL_DIR, CHECKPOINT_DIR, CKPT_MIL_FORMAT
+
+logger = get_logger('MIL_trainer')
+
 
 def train_single_modality(
     mil_model,
     modality: str,
     train_loader,
     val_loader,
-    output_dir,
     device,
     lr: float = 1e-3,
-    n_epochs: int  = 100, 
+    n_epochs: int = 100,
     death_weight: float = 1.0
-): 
-    """ Train a single modality (WSI, CT, MRI) """
-    logger.info("=== Training Modality: %s ===", modality)
-    
-    writer = SummaryWriter(log_dir=os.path.join(output_dir, 'logs', modality))
+):
+    """Train a single modality (WSI, CT, or MRI) MIL sub-model."""
 
-    if modality == 'WSI':
-        sub_model = mil_model.wsi_mil
-    elif modality == 'CT':
-        sub_model = mil_model.ct_mil
+    logger.info("=" * 60)
+    logger.info("[MIL/%s] Starting training — %d epochs, lr=%.2e", modality, n_epochs, lr)
+    logger.info("=" * 60)
+
+    writer = SummaryWriter(log_dir=os.path.join(TB_MIL_DIR, modality))
+
+    # Select sub-model
+    sub_model_map = {'WSI': mil_model.wsi_mil, 'CT': mil_model.ct_mil, 'MRI': mil_model.mri_mil}
+    if modality not in sub_model_map:
+        logger.error("[MIL/%s] Invalid modality. Expected one of %s", modality, list(sub_model_map.keys()))
+        raise ValueError(f"Unknown modality: {modality}")
+    sub_model = sub_model_map[modality]
+
+    # Per-modality optimizer (Table A.1)
+    if modality == 'CT':
+        optimizer = optim.SGD(sub_model.parameters(), lr=lr)
+        logger.info("[MIL/%s] Optimizer: SGD(lr=%.2e)", modality, lr)
     elif modality == 'MRI':
-        sub_model = mil_model.mri_mil
-    else:
-        raise ValueError(f"{modality} is not valid")
+        optimizer = optim.Adam(sub_model.parameters(), lr=lr)
+        logger.info("[MIL/%s] Optimizer: Adam(lr=%.2e)", modality, lr)
+    else:  # WSI
+        optimizer = optim.AdamW(sub_model.parameters(), lr=lr, weight_decay=1e-5)
+        logger.info("[MIL/%s] Optimizer: AdamW(lr=%.2e, wd=1e-5)", modality, lr)
 
-    #AdamW
-    optimizer = optim.AdamW(sub_model.parameters(), lr=lr, weight_decay=1e-5)
-
-    # LR Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
-    )
+    # LR Scheduler: StepLR (step_size=30, gamma=1e-2)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=1e-2)
+    logger.info("[MIL/%s] Scheduler: StepLR(step=30, gamma=0.01)", modality)
 
     criterion = nn.BCELoss(reduction='none')
 
-    #Early Stopping
+    # Early Stopping
     patience_limit = 20
     patience_counter = 0
     best_val_loss = float('inf')
     best_model_state = None
 
     for epoch in range(n_epochs):
-        #training phase
-        mil_model.train()
+        epoch_start = time.time()
 
+        # ─── Training Phase ─────────────────────────────────────
+        mil_model.train()
         running_loss = 0.0
         train_batches = 0
 
@@ -67,9 +86,7 @@ def train_single_modality(
             optimizer.zero_grad(set_to_none=True)
 
             prob, _, _ = mil_model.forward_single_bag(
-                feature_list,
-                modality=modality,
-                add_noise=True 
+                feature_list, modality=modality, add_noise=True
             )
 
             loss_unreduced = criterion(prob, label)
@@ -80,10 +97,10 @@ def train_single_modality(
 
             running_loss += loss.item()
             train_batches += 1
-        
+
         avg_train_loss = running_loss / train_batches if train_batches > 0 else 0.0
 
-        #validation phase
+        # ─── Validation Phase ───────────────────────────────────
         mil_model.eval()
         val_loss = 0.0
         val_batches = 0
@@ -91,15 +108,13 @@ def train_single_modality(
         with torch.no_grad():
             for patient_id, feature_list, label, mask in val_loader:
                 if mask.item() == 0:
-                    continue 
+                    continue
 
                 feature_list = [f.to(device) for f in feature_list]
                 label = label.float().to(device).unsqueeze(0)
 
                 prob, _, _ = mil_model.forward_single_bag(
-                    feature_list,
-                    modality=modality,
-                    add_noise=False 
+                    feature_list, modality=modality, add_noise=False
                 )
 
                 loss = criterion(prob, label)
@@ -107,63 +122,92 @@ def train_single_modality(
                 val_batches += 1
 
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
+        elapsed = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]['lr']
 
-        logger.info(f"Epoch {epoch+1}/{n_epochs} - {modality} Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        # ─── Logging ────────────────────────────────────────────
+        logger.info(
+            "[Epoch %03d/%03d] [%s] train_loss=%.4f | val_loss=%.4f | best_val=%.4f | "
+            "lr=%.2e | patience=%d/%d | time=%.1fs",
+            epoch + 1, n_epochs, modality,
+            avg_train_loss, avg_val_loss, best_val_loss,
+            current_lr, patience_counter, patience_limit, elapsed
+        )
         writer.add_scalar('Loss/Train', avg_train_loss, epoch)
         writer.add_scalar('Loss/Val', avg_val_loss, epoch)
+        writer.add_scalar('LR', current_lr, epoch)
 
-        scheduler.step(avg_val_loss)
-                
+        scheduler.step()
+
+        # ─── Checkpointing ──────────────────────────────────────
         if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss 
+            best_val_loss = avg_val_loss
             patience_counter = 0
             best_model_state = copy.deepcopy(sub_model.state_dict())
 
-            save_path = os.path.join(output_dir, f'best_mil_{modality}.pth')
+            save_path = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality=modality))
             torch.save(mil_model.state_dict(), save_path)
-            logger.info(f"  -> Best model saved (Val Loss: {best_val_loss:.4f})")
+            logger.info(
+                "  >> Checkpoint saved: %s (val_loss=%.4f)", save_path, best_val_loss
+            )
         else:
             patience_counter += 1
             if patience_counter >= patience_limit:
-                logger.info(f"Early stopping triggered for {modality} at epoch {epoch+1}")
+                logger.warning(
+                    "[MIL/%s] Early stopping at epoch %d — no improvement for %d epochs "
+                    "(best_val=%.4f, current_val=%.4f)",
+                    modality, epoch + 1, patience_limit, best_val_loss, avg_val_loss
+                )
                 break
 
     writer.close()
 
     if best_model_state is not None:
         sub_model.load_state_dict(best_model_state)
-        logger.info(f"Restored best weights for {modality}")
+        logger.info("[MIL/%s] Restored best weights (val_loss=%.4f)", modality, best_val_loss)
+    else:
+        logger.warning("[MIL/%s] No improvement was observed during training!", modality)
 
 
-def train_mil_survival(mil_model, output_dir, n_epochs: int = 100, lr: float = 1e-3):
-    """ 
-    Orchestrator to train WSI, CT, and MRI MIL models sequentially.
-    Strategy: Train separately -> freeze others -> update weights
+def train_mil_survival(mil_model, n_epochs: int = 100, lr: float = 1e-3):
     """
-    logger.info("Begin training MIL module (Stage 1)")
-    os.makedirs(output_dir, exist_ok=True)        
+    Orchestrator: train WSI, CT, MRI MIL models sequentially.
+    Uses per-modality epoch counts from Table A.1.
+    """
+    logger.info("=" * 60)
+    logger.info("STAGE 1 — STEP 1/3: MIL Selection Training")
+    logger.info("=" * 60)
 
-    train_loaders_tuple = mil_model._get_dataloader(split='train', shuffle=True)
-    val_loaders_tuple = mil_model._get_dataloader(split='test', shuffle=False)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    train_loaders = mil_model._get_dataloader(split='train', shuffle=True)
+    val_loaders = mil_model._get_dataloader(split='test', shuffle=False)
 
     loaders = {
-        'WSI': {'train': train_loaders_tuple[0], 'val': val_loaders_tuple[0]},
-        'CT':  {'train': train_loaders_tuple[1], 'val': val_loaders_tuple[1]},
-        'MRI': {'train': train_loaders_tuple[2], 'val': val_loaders_tuple[2]}
+        'WSI': {'train': train_loaders[0], 'val': val_loaders[0]},
+        'CT':  {'train': train_loaders[1], 'val': val_loaders[1]},
+        'MRI': {'train': train_loaders[2], 'val': val_loaders[2]}
     }
 
-    device = next(mil_model.parameters()).device 
+    device = next(mil_model.parameters()).device
+    logger.info("Device: %s", device)
 
-    for modality in ['WSI', 'CT', 'MRI']:
+    # Per-modality epochs (Table A.1): CT=60, MRI=60, WSI=100
+    modality_epochs = {'WSI': 100, 'CT': 60, 'MRI': 60}
+
+    for i, modality in enumerate(['WSI', 'CT', 'MRI'], 1):
+        logger.info("─── Training modality %d/3: %s (%d epochs) ───",
+                     i, modality, modality_epochs[modality])
         train_single_modality(
             mil_model=mil_model,
             modality=modality,
             train_loader=loaders[modality]['train'],
             val_loader=loaders[modality]['val'],
-            output_dir=output_dir,
-            n_epochs=n_epochs,
+            n_epochs=modality_epochs[modality],
             device=device,
             lr=lr
         )
-        
-    logger.info("MIL Training Stage 1 Complete.")
+
+    logger.info("=" * 60)
+    logger.info("STAGE 1 — STEP 1/3: MIL Training COMPLETE")
+    logger.info("=" * 60)

@@ -37,13 +37,15 @@ class FeatureBagDataset(Dataset):
 
     def _apply_oversample(self):
         """ 
-        Oversampling minority class (death at 12 months) with 6x 
+        Oversampling minority class (death at 12 months)
+        Per-modality factors (Table A.1): CT=8x, MRI=16x, WSI=8x
         """
 
-        oversample_factor = 6
+        oversample_factors = {'CT': 8, 'MRI': 16, 'WSI': 8}
+        oversample_factor = oversample_factors.get(self.modality, 8)
 
-        minority_class = self.df[self.df['vital_status_12'] == 1]
-        majority_class = self.df[self.df['vital_status_12'] == 0]
+        minority_class = self.df[self.df['vital_status_12'] == 0]  # died = minority
+        majority_class = self.df[self.df['vital_status_12'] == 1]  # survived = majority
 
         minority_oversampled = pd.concat([minority_class] * oversample_factor, ignore_index = True)
 
@@ -51,8 +53,8 @@ class FeatureBagDataset(Dataset):
         self.df = self.df.sample(frac=1, random_state=42).reset_index(drop=True)
 
         logger.info(
-            "Oversampling for %s with 6x at minority class",
-            self.modality
+            "Oversampling for %s with %dx at minority class",
+            self.modality, oversample_factor
         )
 
     def __len__(self):
