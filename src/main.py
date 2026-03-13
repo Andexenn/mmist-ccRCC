@@ -32,6 +32,7 @@ from models.Fusion.model import Fusion
 
 from trainer.stage1_trainer import train_stage1
 from trainer.stage2_trainer import train_pipeline
+from prepare_data import prepare_dataset
 
 
 def parse_args():
@@ -50,8 +51,8 @@ TensorBoard:
     )
 
     # Required
-    parser.add_argument('--stage', type=str, required=True, choices=['1', '2', 'all'],
-                        help='Training stage: 1 (modules), 2 (finetune), or all')
+    parser.add_argument('--stage', type=str, required=True, choices=['prepare', '1', '2', 'all'],
+                        help='Training stage: prepare (generate CSV), 1 (modules), 2 (finetune), or all')
     parser.add_argument('--feature_dir', type=str, required=True,
                         help='Path to extracted features directory')
     parser.add_argument('--clinical_file', type=str, required=True,
@@ -164,6 +165,24 @@ def main():
     logger.info("  Device:         %s", args.device)
     logger.info("  Fusion:         %s", args.fusion_strategy)
     logger.info("=" * 60)
+
+    # ─── Data Preparation ────────────────────────────────────────
+    if args.stage == 'prepare':
+        output_csv = os.path.join(args.feature_dir, 'master_dataset.csv')
+        prepare_dataset(args.feature_dir, output_csv)
+        logger.info("Data preparation complete. Master CSV: %s", output_csv)
+        return
+
+    # Auto-generate master CSV if it doesn't exist
+    master_csv = os.path.join(args.feature_dir, 'master_dataset.csv')
+    if not os.path.exists(master_csv):
+        logger.info("Master CSV not found — generating from feature directory...")
+        prepare_dataset(args.feature_dir, master_csv)
+
+    # Use master CSV as the clinical file for training
+    if os.path.exists(master_csv):
+        logger.info("Using master CSV: %s", master_csv)
+        args.clinical_file = master_csv
 
     # ─── Stage 1 ─────────────────────────────────────────────────
     mil_model, recon_model, fusion_model = None, None, None

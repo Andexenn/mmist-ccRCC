@@ -22,10 +22,24 @@ class ReconstructDataset(Dataset):
 
         self.clinical_dir = clinical_dir
         self.feature_dir = feature_dir
-        
-        self.df = pd.read_csv(self.clinical_dir)
+        self.split = split
 
-        self.df = self.df[self.df['Split'] == split].reset_index(drop=True)
+        full_df = pd.read_csv(self.clinical_dir)
+        split_df = full_df[full_df['Split'] == split].reset_index(drop=True)
+
+        # Build per-patient file_name lookup: {case_id: {modality: file_name}}
+        self.file_name_lookup = {}
+        if 'file_name' in split_df.columns:
+            for _, row in split_df.iterrows():
+                cid = row['case_id']
+                mod = row.get('Modality', '')
+                fname = row.get('file_name', '')
+                if cid not in self.file_name_lookup:
+                    self.file_name_lookup[cid] = {}
+                self.file_name_lookup[cid][mod] = fname
+
+        # Deduplicate to one row per patient for iteration
+        self.df = split_df.drop_duplicates(subset='case_id').reset_index(drop=True)
 
         if split == 'train':
             self._apply_oversample()
@@ -43,20 +57,40 @@ class ReconstructDataset(Dataset):
             logger.info(f"Reconstruction Dataset Oversampled (6x). New size: {len(self.df)}")
 
 
-    def _load_bag(self, patient_id, pattern):
+    def _load_bag(self, patient_id, modality):
         """Helper load list features of a modality"""
-        bag_folder = os.path.join(self.feature_dir, patient_id)
+        # Try the new path structure: feature_dir/Modality/split/file_name
+        file_name = None
+        if patient_id in self.file_name_lookup:
+            file_name = self.file_name_lookup[patient_id].get(modality)
+
+        if file_name:
+            bag_path = os.path.join(self.feature_dir, modality, self.split, file_name)
+        else:
+            # Fallback for legacy structure
+            bag_path = os.path.join(self.feature_dir, patient_id)
 
         feature_list = []
-        if os.path.exists(bag_folder):
-            file_paths = sorted(glob.glob(os.path.join(bag_folder, pattern)))
+
+        if os.path.isdir(bag_path):
+            # Entry is a folder with .pt files inside
+            file_paths = sorted(glob.glob(os.path.join(bag_path, "*.pt")))
             for fp in file_paths:
-                f = torch.load(fp)
+                f = torch.load(fp, weights_only=True)
                 if isinstance(f, np.ndarray):
                     f = torch.from_numpy(f).float()
                 if f.dim() == 1:
                     f = f.unsqueeze(0)
                 feature_list.append(f)
+        elif os.path.isfile(bag_path) or os.path.isfile(bag_path + '.pt'):
+            # Entry is a single .pt file
+            fpath = bag_path if os.path.isfile(bag_path) else bag_path + '.pt'
+            f = torch.load(fpath, weights_only=True)
+            if isinstance(f, np.ndarray):
+                f = torch.from_numpy(f).float()
+            if f.dim() == 1:
+                f = f.unsqueeze(0)
+            feature_list.append(f)
 
         if len(feature_list) > 0:
             return feature_list, 1
@@ -64,7 +98,7 @@ class ReconstructDataset(Dataset):
             return [torch.zeros((1, 768)).float()], 0
         
     def _load_clinical(self, patient_id):
-        return self._load_bag(patient_id, "*clinical*.pt")
+        return self._load_bag(patient_id, 'Clinical')
     
     def __len__(self):
         return len(self.df)
@@ -73,9 +107,9 @@ class ReconstructDataset(Dataset):
         row = self.df.iloc[idx]
         pid = row['case_id']
 
-        wsi_bag, wsi_mask = self._load_bag(pid, "*wsi*.pt")
-        ct_bag, ct_mask = self._load_bag(pid, "*ct*.pt")
-        mri_bag, mri_mask = self._load_bag(pid, "*mri*.pt")
+        wsi_bag, wsi_mask = self._load_bag(pid, 'WSI')
+        ct_bag, ct_mask = self._load_bag(pid, 'CT')
+        mri_bag, mri_mask = self._load_bag(pid, 'MRI')
         
         cli_bag, cli_mask = self._load_clinical(pid)
         cli_feat = cli_bag[0] 

@@ -65,24 +65,37 @@ class FeatureBagDataset(Dataset):
         patient_id = row['case_id']
         label = torch.tensor(int(row['vital_status_12'])).long()
 
-        bag_folder = os.path.join(self.feature_dir, patient_id)
+        # Use file_name + modality + split to build the correct path
+        # Structure: feature_dir/Modality/Split/file_name
+        if 'file_name' in row.index:
+            bag_folder = os.path.join(
+                self.feature_dir, self.modality, self.split, row['file_name']
+            )
+        else:
+            # Fallback for legacy CSVs without file_name column
+            bag_folder = os.path.join(self.feature_dir, patient_id)
 
         feature_list = []
 
-        if os.path.exists(bag_folder):
+        if os.path.isdir(bag_folder):
+            # Entry is a folder containing .pt files
             file_paths = sorted(glob.glob(os.path.join(bag_folder, "*.pt")))
-
             for file_path in file_paths:
-                f = torch.load(file_path)
-
-                # change to tensort
+                f = torch.load(file_path, weights_only=True)
                 if isinstance(f, np.ndarray):
                     f = torch.from_numpy(f).float()
-
                 if f.dim() == 1:
                     f = f.unsqueeze(0)
-
                 feature_list.append(f)
+        elif os.path.isfile(bag_folder) or os.path.isfile(bag_folder + '.pt'):
+            # Entry is a single .pt file
+            fpath = bag_folder if os.path.isfile(bag_folder) else bag_folder + '.pt'
+            f = torch.load(fpath, weights_only=True)
+            if isinstance(f, np.ndarray):
+                f = torch.from_numpy(f).float()
+            if f.dim() == 1:
+                f = f.unsqueeze(0)
+            feature_list.append(f)
         else:
             logger.error("[ERR]:: %s does not exist.", bag_folder)
 
