@@ -92,7 +92,7 @@ def build_uid_to_caseid_map(feature_dir: str) -> dict:
 
         # Auto-detect UID column
         uid_col = None
-        for candidate in ['uid', 'slide_id', 'image_id', 'filename', 'file_name', 'name']:
+        for candidate in ['uid', 'slide_id', 'image_id', 'filename', 'file_name', 'name', 'series instance uid']:
             if candidate in columns_lower:
                 uid_col = columns_lower[candidate]
                 break
