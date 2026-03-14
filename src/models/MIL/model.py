@@ -31,6 +31,7 @@ class SingleMIL(nn.Module):
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.GELU())
+            layers.append(nn.Dropout(p=0.3))
             prev_dim = hidden_dim
 
         layers.append(nn.Linear(prev_dim, 1))

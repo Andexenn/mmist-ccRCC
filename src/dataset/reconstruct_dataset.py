@@ -57,6 +57,42 @@ class ReconstructDataset(Dataset):
             logger.info(f"Reconstruction Dataset Oversampled (6x). New size: {len(self.df)}")
 
 
+    @staticmethod
+    def _safe_load_tensor(file_path: str) -> torch.Tensor:
+        """Safely load a .pt file and ensure it returns a float tensor."""
+        try:
+            f = torch.load(file_path, weights_only=True)
+        except Exception:
+            try:
+                f = torch.load(file_path, weights_only=False)
+            except Exception as e:
+                logger.warning("Failed to load %s: %s", file_path, e)
+                return None
+
+        if isinstance(f, dict):
+            for v in f.values():
+                if isinstance(v, (torch.Tensor, np.ndarray)):
+                    f = v
+                    break
+            else:
+                logger.warning("Loaded dict from %s but no tensor found", file_path)
+                return None
+
+        if isinstance(f, np.ndarray):
+            f = torch.from_numpy(f).float()
+
+        if not isinstance(f, torch.Tensor):
+            try:
+                f = torch.tensor(f).float()
+            except Exception:
+                logger.warning("Cannot convert object from %s (type=%s) to tensor", file_path, type(f).__name__)
+                return None
+
+        f = f.float()
+        if f.dim() == 1:
+            f = f.unsqueeze(0)
+        return f
+
     def _load_bag(self, patient_id, modality):
         """Helper load list features of a modality"""
         # Try the new path structure: feature_dir/Modality/split/file_name
@@ -72,25 +108,20 @@ class ReconstructDataset(Dataset):
 
         feature_list = []
 
-        if os.path.isdir(bag_path):
-            # Entry is a folder with .pt files inside
-            file_paths = sorted(glob.glob(os.path.join(bag_path, "*.pt")))
-            for fp in file_paths:
-                f = torch.load(fp, weights_only=True)
-                if isinstance(f, np.ndarray):
-                    f = torch.from_numpy(f).float()
-                if f.dim() == 1:
-                    f = f.unsqueeze(0)
-                feature_list.append(f)
-        elif os.path.isfile(bag_path) or os.path.isfile(bag_path + '.pt'):
-            # Entry is a single .pt file
-            fpath = bag_path if os.path.isfile(bag_path) else bag_path + '.pt'
-            f = torch.load(fpath, weights_only=True)
-            if isinstance(f, np.ndarray):
-                f = torch.from_numpy(f).float()
-            if f.dim() == 1:
-                f = f.unsqueeze(0)
-            feature_list.append(f)
+        try:
+            if os.path.isdir(bag_path):
+                file_paths = sorted(glob.glob(os.path.join(bag_path, "*.pt")))
+                for fp in file_paths:
+                    f = self._safe_load_tensor(fp)
+                    if f is not None:
+                        feature_list.append(f)
+            elif os.path.isfile(bag_path) or os.path.isfile(bag_path + '.pt'):
+                fpath = bag_path if os.path.isfile(bag_path) else bag_path + '.pt'
+                f = self._safe_load_tensor(fpath)
+                if f is not None:
+                    feature_list.append(f)
+        except Exception as e:
+            logger.error("Error loading bag for patient=%s modality=%s: %s", patient_id, modality, e)
 
         if len(feature_list) > 0:
             return feature_list, 1

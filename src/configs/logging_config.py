@@ -71,7 +71,8 @@ def setup_logger(name: str = 'mmist'):
 def get_logger(module_name: str) -> logging.Logger:
     """
     Get a child logger under the main 'mmist' hierarchy.
-    This ensures all modules share the same handlers.
+    This ensures all modules share the same handlers (console + shared file).
+    Additionally, each module gets its **own** log file for easy debugging.
 
     Args:
         module_name (str): e.g. 'MIL_trainer', 'reconstruction_trainer'
@@ -79,10 +80,38 @@ def get_logger(module_name: str) -> logging.Logger:
     Returns:
         logging.Logger: Child logger (e.g. mmist.MIL_trainer)
 
-    Usage:
-        from configs.logging_config import get_logger
-        logger = get_logger(__name__)
+    Log files produced:
+        logs/mmist.log              — combined log (all modules)
+        logs/mil_trainer.log        — MIL training only
+        logs/reconstruction_trainer.log
+        logs/fusion_trainer.log
+        logs/stage1.log
+        logs/stage2_trainer.log
+        logs/prepare_data.log
     """
     # Ensure the root logger is configured
     setup_logger('mmist')
-    return logging.getLogger(f'mmist.{module_name}')
+
+    child_logger = logging.getLogger(f'mmist.{module_name}')
+
+    # Only add the per-module file handler once
+    handler_tag = f'_file_{module_name}'
+    if not any(getattr(h, '_tag', None) == handler_tag for h in child_logger.handlers):
+        os.makedirs(FILE_LOG_DIR, exist_ok=True)
+
+        file_fmt = logging.Formatter(
+            fmt='%(asctime)s │ %(levelname)-8s │ %(name)s.%(funcName)s:%(lineno)d │ %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        module_file_handler = RotatingFileHandler(
+            filename=os.path.join(FILE_LOG_DIR, f'{module_name}.log'),
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=3,
+            encoding='utf-8'
+        )
+        module_file_handler.setLevel(logging.DEBUG)
+        module_file_handler.setFormatter(file_fmt)
+        module_file_handler._tag = handler_tag  # mark to prevent duplicates
+        child_logger.addHandler(module_file_handler)
+
+    return child_logger

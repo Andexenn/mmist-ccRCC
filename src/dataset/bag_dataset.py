@@ -60,44 +60,87 @@ class FeatureBagDataset(Dataset):
     def __len__(self):
         return len(self.df)
 
+    @staticmethod
+    def _safe_load_tensor(file_path: str) -> torch.Tensor:
+        """Safely load a .pt file and ensure it returns a float tensor.
+
+        Handles: plain tensors, numpy arrays, dicts (extracts first tensor value),
+        and any other unexpected types.
+        """
+        try:
+            f = torch.load(file_path, weights_only=True)
+        except Exception:
+            # weights_only=True may reject some files; retry without it
+            try:
+                f = torch.load(file_path, weights_only=False)
+            except Exception as e:
+                logger.warning("Failed to load %s: %s", file_path, e)
+                return None
+
+        # Handle dict (e.g. {'features': tensor, ...})
+        if isinstance(f, dict):
+            for v in f.values():
+                if isinstance(v, (torch.Tensor, np.ndarray)):
+                    f = v
+                    break
+            else:
+                logger.warning("Loaded dict from %s but no tensor found, keys=%s", file_path, list(f.keys()))
+                return None
+
+        # Handle numpy array
+        if isinstance(f, np.ndarray):
+            f = torch.from_numpy(f).float()
+
+        # Handle non-tensor types
+        if not isinstance(f, torch.Tensor):
+            try:
+                f = torch.tensor(f).float()
+            except Exception:
+                logger.warning("Cannot convert loaded object from %s (type=%s) to tensor", file_path, type(f).__name__)
+                return None
+
+        f = f.float()
+        if f.dim() == 1:
+            f = f.unsqueeze(0)
+        return f
+
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         patient_id = row['case_id']
         label = torch.tensor(int(row['vital_status_12'])).long()
 
-        # Use file_name + modality + split to build the correct path
-        # Structure: feature_dir/Modality/Split/file_name
-        if 'file_name' in row.index:
-            bag_folder = os.path.join(
-                self.feature_dir, self.modality, self.split, row['file_name']
-            )
-        else:
-            # Fallback for legacy CSVs without file_name column
-            bag_folder = os.path.join(self.feature_dir, patient_id)
+        try:
+            # Use file_name + modality + split to build the correct path
+            # Structure: feature_dir/Modality/Split/file_name
+            if 'file_name' in row.index:
+                bag_folder = os.path.join(
+                    self.feature_dir, self.modality, self.split, row['file_name']
+                )
+            else:
+                # Fallback for legacy CSVs without file_name column
+                bag_folder = os.path.join(self.feature_dir, patient_id)
 
-        feature_list = []
+            feature_list = []
 
-        if os.path.isdir(bag_folder):
-            # Entry is a folder containing .pt files
-            file_paths = sorted(glob.glob(os.path.join(bag_folder, "*.pt")))
-            for file_path in file_paths:
-                f = torch.load(file_path, weights_only=True)
-                if isinstance(f, np.ndarray):
-                    f = torch.from_numpy(f).float()
-                if f.dim() == 1:
-                    f = f.unsqueeze(0)
-                feature_list.append(f)
-        elif os.path.isfile(bag_folder) or os.path.isfile(bag_folder + '.pt'):
-            # Entry is a single .pt file
-            fpath = bag_folder if os.path.isfile(bag_folder) else bag_folder + '.pt'
-            f = torch.load(fpath, weights_only=True)
-            if isinstance(f, np.ndarray):
-                f = torch.from_numpy(f).float()
-            if f.dim() == 1:
-                f = f.unsqueeze(0)
-            feature_list.append(f)
-        else:
-            logger.error("[ERR]:: %s does not exist.", bag_folder)
+            if os.path.isdir(bag_folder):
+                # Entry is a folder containing .pt files
+                file_paths = sorted(glob.glob(os.path.join(bag_folder, "*.pt")))
+                for file_path in file_paths:
+                    f = self._safe_load_tensor(file_path)
+                    if f is not None:
+                        feature_list.append(f)
+            elif os.path.isfile(bag_folder) or os.path.isfile(bag_folder + '.pt'):
+                # Entry is a single .pt file
+                fpath = bag_folder if os.path.isfile(bag_folder) else bag_folder + '.pt'
+                f = self._safe_load_tensor(fpath)
+                if f is not None:
+                    feature_list.append(f)
+            else:
+                logger.error("[ERR]:: %s does not exist.", bag_folder)
+
+        except Exception as e:
+            logger.error("Unexpected error loading sample idx=%d (patient=%s): %s", idx, patient_id, e)
+            feature_list = []
 
         if len(feature_list) > 0:
             mask = 1

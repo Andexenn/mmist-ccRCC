@@ -93,6 +93,7 @@ def train_single_modality(
             weight = death_weight if label.item() == 0 else 1.0
             loss = (loss_unreduced * weight).mean()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(sub_model.parameters(), max_norm=1.0)
             optimizer.step()
 
             running_loss += loss.item()

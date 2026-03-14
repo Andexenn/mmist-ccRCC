@@ -16,12 +16,14 @@ class GatedAttentionPooling(nn.Module):
         self.V = nn.Linear(input_dim, hidden_dim) # feature transformation
         self.U = nn.Linear(input_dim, hidden_dim) # gating mechanism
         self.w = nn.Linear(hidden_dim, 1) # cal logits
+        self.dropout = nn.Dropout(p=0.25)
 
     def forward(self, h):
         tanh_val = torch.tanh(self.V(h))
         sigm_val = torch.sigmoid(self.U(h))
 
         gated_out = tanh_val * sigm_val 
+        gated_out = self.dropout(gated_out)
 
         scores = self.w(gated_out)
         weights = F.softmax(scores, dim=0)
