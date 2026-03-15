@@ -11,6 +11,7 @@ import time
 from typing import List
 
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
@@ -21,6 +22,7 @@ from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
 from dataset.reconstruct_dataset import get_reconstruct_dataloader
+from utils.metrics import calc_bacc, calc_macro_f1
 
 logger = get_logger('fusion_trainer')
 
@@ -89,6 +91,8 @@ def train_fuse_module(
         fusion_model.train()
         running_loss = 0.0
         train_steps = 0
+        all_train_preds = []
+        all_train_labels = []
 
         for data in train_loader:
             wsi_bag = [f.to(device) for f in data['wsi_bag']]
@@ -153,6 +157,8 @@ def train_fuse_module(
 
             running_loss += loss.item()
             train_steps += 1
+            all_train_preds.append((prob > 0.5).int().cpu().unsqueeze(0) if prob.dim() == 0 else (prob > 0.5).int().cpu())
+            all_train_labels.append(label.int().cpu().unsqueeze(0) if label.dim() == 0 else label.int().cpu())
 
         avg_train_loss = running_loss / train_steps if train_steps > 0 else 0.0
 
@@ -160,6 +166,8 @@ def train_fuse_module(
         fusion_model.eval()
         val_loss = 0.0
         val_steps = 0
+        all_val_preds = []
+        all_val_labels = []
 
         with torch.no_grad():
             for data in val_loader:
@@ -208,21 +216,46 @@ def train_fuse_module(
                 loss = criterion(prob.squeeze(), label.squeeze())
                 val_loss += loss.item()
                 val_steps += 1
+                all_val_preds.append((prob.squeeze() > 0.5).int().cpu().unsqueeze(0) if prob.squeeze().dim() == 0 else (prob.squeeze() > 0.5).int().cpu())
+                all_val_labels.append(label.squeeze().int().cpu().unsqueeze(0) if label.squeeze().dim() == 0 else label.squeeze().int().cpu())
 
         avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
         elapsed = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]['lr']
 
+        # ─── Compute Metrics ─────────────────────────────────────
+        if all_train_preds:
+            train_preds_cat = torch.cat(all_train_preds)
+            train_labels_cat = torch.cat(all_train_labels)
+            train_bacc = calc_bacc(train_labels_cat, train_preds_cat)
+            train_f1 = calc_macro_f1(train_labels_cat, train_preds_cat)
+        else:
+            train_bacc, train_f1 = 0.0, 0.0
+
+        if all_val_preds:
+            val_preds_cat = torch.cat(all_val_preds)
+            val_labels_cat = torch.cat(all_val_labels)
+            val_bacc = calc_bacc(val_labels_cat, val_preds_cat)
+            val_f1 = calc_macro_f1(val_labels_cat, val_preds_cat)
+        else:
+            val_bacc, val_f1 = 0.0, 0.0
+
         # ─── Logging ────────────────────────────────────────────
         logger.info(
             "[Epoch %03d/%03d] [Fusion] train_loss=%.4f | val_loss=%.4f | best_val=%.4f | "
+            "train_bacc=%.4f | train_f1=%.4f | val_bacc=%.4f | val_f1=%.4f | "
             "lr=%.2e | patience=%d/%d | time=%.1fs",
             epoch + 1, epochs,
             avg_train_loss, avg_val_loss, best_val_loss,
+            train_bacc, train_f1, val_bacc, val_f1,
             current_lr, patience_counter, patience_limit, elapsed
         )
         writer.add_scalar('Fusion/Train_Loss', avg_train_loss, epoch)
         writer.add_scalar('Fusion/Val_Loss', avg_val_loss, epoch)
+        writer.add_scalar('Fusion/Train_BAcc', train_bacc, epoch)
+        writer.add_scalar('Fusion/Train_MacroF1', train_f1, epoch)
+        writer.add_scalar('Fusion/Val_BAcc', val_bacc, epoch)
+        writer.add_scalar('Fusion/Val_MacroF1', val_f1, epoch)
         writer.add_scalar('Fusion/LR', current_lr, epoch)
 
         scheduler.step(avg_val_loss)

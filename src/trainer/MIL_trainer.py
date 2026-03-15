@@ -16,6 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
 from configs.paths import TB_MIL_DIR, CHECKPOINT_DIR, CKPT_MIL_FORMAT
+from utils.metrics import calc_bacc, calc_macro_f1
 
 logger = get_logger('MIL_trainer')
 
@@ -75,6 +76,8 @@ def train_single_modality(
         mil_model.train()
         running_loss = 0.0
         train_batches = 0
+        all_train_preds = []
+        all_train_labels = []
 
         for patient_id, feature_list, label, mask in train_loader:
             if mask.item() == 0:
@@ -98,6 +101,8 @@ def train_single_modality(
 
             running_loss += loss.item()
             train_batches += 1
+            all_train_preds.append((prob > 0.5).int().cpu())
+            all_train_labels.append(label.int().cpu())
 
         avg_train_loss = running_loss / train_batches if train_batches > 0 else 0.0
 
@@ -105,6 +110,8 @@ def train_single_modality(
         mil_model.eval()
         val_loss = 0.0
         val_batches = 0
+        all_val_preds = []
+        all_val_labels = []
 
         with torch.no_grad():
             for patient_id, feature_list, label, mask in val_loader:
@@ -121,21 +128,46 @@ def train_single_modality(
                 loss = criterion(prob, label)
                 val_loss += loss.item()
                 val_batches += 1
+                all_val_preds.append((prob > 0.5).int().cpu())
+                all_val_labels.append(label.int().cpu())
 
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
         elapsed = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]['lr']
 
+        # ─── Compute Metrics ─────────────────────────────────────
+        if all_train_preds:
+            train_preds_cat = torch.cat(all_train_preds)
+            train_labels_cat = torch.cat(all_train_labels)
+            train_bacc = calc_bacc(train_labels_cat, train_preds_cat)
+            train_f1 = calc_macro_f1(train_labels_cat, train_preds_cat)
+        else:
+            train_bacc, train_f1 = 0.0, 0.0
+
+        if all_val_preds:
+            val_preds_cat = torch.cat(all_val_preds)
+            val_labels_cat = torch.cat(all_val_labels)
+            val_bacc = calc_bacc(val_labels_cat, val_preds_cat)
+            val_f1 = calc_macro_f1(val_labels_cat, val_preds_cat)
+        else:
+            val_bacc, val_f1 = 0.0, 0.0
+
         # ─── Logging ────────────────────────────────────────────
         logger.info(
             "[Epoch %03d/%03d] [%s] train_loss=%.4f | val_loss=%.4f | best_val=%.4f | "
+            "train_bacc=%.4f | train_f1=%.4f | val_bacc=%.4f | val_f1=%.4f | "
             "lr=%.2e | patience=%d/%d | time=%.1fs",
             epoch + 1, n_epochs, modality,
             avg_train_loss, avg_val_loss, best_val_loss,
+            train_bacc, train_f1, val_bacc, val_f1,
             current_lr, patience_counter, patience_limit, elapsed
         )
         writer.add_scalar('Loss/Train', avg_train_loss, epoch)
         writer.add_scalar('Loss/Val', avg_val_loss, epoch)
+        writer.add_scalar('Metrics/Train_BAcc', train_bacc, epoch)
+        writer.add_scalar('Metrics/Train_MacroF1', train_f1, epoch)
+        writer.add_scalar('Metrics/Val_BAcc', val_bacc, epoch)
+        writer.add_scalar('Metrics/Val_MacroF1', val_f1, epoch)
         writer.add_scalar('LR', current_lr, epoch)
 
         scheduler.step()
