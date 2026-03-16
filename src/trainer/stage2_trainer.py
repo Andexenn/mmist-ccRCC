@@ -17,7 +17,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
-from configs.paths import TB_PIPELINE_DIR, CHECKPOINT_DIR, CKPT_PIPELINE
+from configs.paths import CHECKPOINT_DIR, get_pipeline_tb_dir, get_pipeline_ckpt_name
 from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
@@ -33,6 +33,7 @@ def train_pipeline(
     fusion_model: Fusion,
     clinical_file: str,
     feature_dir: str,
+    fusion_strategy: str = 'early_mean',
     bacc_mods: List = [1.0, 1.0, 1.0, 1.0],
     epochs: int = 100,
     lr: float = 1e-5,
@@ -43,12 +44,14 @@ def train_pipeline(
     All modules are unfrozen and trained jointly with a single optimizer.
     """
     logger.info("=" * 60)
-    logger.info("STAGE 2: End-to-End Pipeline Finetuning")
+    logger.info("STAGE 2: End-to-End Pipeline Finetuning [%s]", fusion_strategy)
     logger.info("  epochs=%d | lr=%.2e | death_weight=%.1f", epochs, lr, death_weight)
     logger.info("=" * 60)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    writer = SummaryWriter(log_dir=TB_PIPELINE_DIR)
+    tb_dir = get_pipeline_tb_dir(fusion_strategy)
+    os.makedirs(tb_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=tb_dir)
     device = next(fusion_model.parameters()).device
 
     # ─── Unfreeze ALL models ─────────────────────────────────────
@@ -79,6 +82,8 @@ def train_pipeline(
 
     # ─── Training Loop ───────────────────────────────────────────
     best_val_loss = float('inf')
+    best_val_bacc = 0.0
+    best_val_f1 = 0.0
     patience_limit = 20
     patience_counter = 0
 
@@ -263,8 +268,11 @@ def train_pipeline(
         # ─── Checkpointing ──────────────────────────────────────
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_val_bacc = val_bacc
+            best_val_f1 = val_f1
             patience_counter = 0
-            save_path = os.path.join(CHECKPOINT_DIR, CKPT_PIPELINE)
+            ckpt_name = get_pipeline_ckpt_name(fusion_strategy)
+            save_path = os.path.join(CHECKPOINT_DIR, ckpt_name)
             torch.save({
                 'mil_state_dict': mil_model.state_dict(),
                 'recon_state_dict': recon_model.state_dict(),
@@ -282,4 +290,12 @@ def train_pipeline(
                 break
 
     writer.close()
-    logger.info("STAGE 2: Pipeline Finetuning COMPLETE (best_val=%.4f)", best_val_loss)
+    logger.info("STAGE 2: Pipeline Finetuning COMPLETE [%s] (best_val_loss=%.4f, best_val_bacc=%.4f, best_val_f1=%.4f)",
+                fusion_strategy, best_val_loss, best_val_bacc, best_val_f1)
+
+    return {
+        'strategy': fusion_strategy,
+        'best_val_loss': best_val_loss,
+        'best_val_bacc': best_val_bacc,
+        'best_val_f1': best_val_f1,
+    }

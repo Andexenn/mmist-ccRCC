@@ -28,6 +28,29 @@ CKPT_RECON           = 'best_reconstruction.pth'
 CKPT_FUSION          = 'best_fusion_model.pth'
 CKPT_PIPELINE        = 'best_pipeline.pth'
 
+# ─── All fusion strategies ───
+ALL_FUSION_STRATEGIES = ['early_mean', 'early_cat', 'late_ws', 'late_lw']
+
+
+def get_fusion_tb_dir(strategy: str) -> str:
+    """Return strategy-specific TensorBoard dir, e.g. runs/stage1_fusion_early_mean/"""
+    return os.path.join(TENSORBOARD_ROOT, f'stage1_fusion_{strategy}')
+
+
+def get_pipeline_tb_dir(strategy: str) -> str:
+    """Return strategy-specific TensorBoard dir, e.g. runs/stage2_pipeline_early_mean/"""
+    return os.path.join(TENSORBOARD_ROOT, f'stage2_pipeline_{strategy}')
+
+
+def get_fusion_ckpt_name(strategy: str) -> str:
+    """Return strategy-specific checkpoint filename, e.g. best_fusion_early_mean.pth"""
+    return f'best_fusion_{strategy}.pth'
+
+
+def get_pipeline_ckpt_name(strategy: str) -> str:
+    """Return strategy-specific checkpoint filename, e.g. best_pipeline_early_mean.pth"""
+    return f'best_pipeline_{strategy}.pth'
+
 
 def ensure_dirs():
     """Create all required directories if they don't exist."""

@@ -17,7 +17,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
-from configs.paths import TB_FUSION_DIR, CHECKPOINT_DIR, CKPT_FUSION
+from configs.paths import CHECKPOINT_DIR, get_fusion_tb_dir, get_fusion_ckpt_name
 from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
@@ -48,7 +48,9 @@ def train_fuse_module(
     logger.info("=" * 60)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    writer = SummaryWriter(log_dir=TB_FUSION_DIR)
+    tb_dir = get_fusion_tb_dir(fusion_strategy)
+    os.makedirs(tb_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=tb_dir)
     device = next(fusion_model.parameters()).device
 
     # ─── Freeze MIL and Reconstruction ───────────────────────────
@@ -83,6 +85,8 @@ def train_fuse_module(
 
     # ─── Training Loop ───────────────────────────────────────────
     best_val_loss = float('inf')
+    best_val_bacc = 0.0
+    best_val_f1 = 0.0
     patience_limit = 20
     patience_counter = 0
 
@@ -263,8 +267,11 @@ def train_fuse_module(
         # ─── Checkpointing ──────────────────────────────────────
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_val_bacc = val_bacc
+            best_val_f1 = val_f1
             patience_counter = 0
-            save_path = os.path.join(CHECKPOINT_DIR, CKPT_FUSION)
+            ckpt_name = get_fusion_ckpt_name(fusion_strategy)
+            save_path = os.path.join(CHECKPOINT_DIR, ckpt_name)
             torch.save(fusion_model.state_dict(), save_path)
             logger.info("  >> Checkpoint saved: %s (val_loss=%.4f)", save_path, best_val_loss)
         else:
@@ -278,4 +285,12 @@ def train_fuse_module(
                 break
 
     writer.close()
-    logger.info("STAGE 1 — STEP 3/3: Fusion Training COMPLETE (best_val=%.4f)", best_val_loss)
+    logger.info("STAGE 1 — STEP 3/3: Fusion Training COMPLETE [%s] (best_val_loss=%.4f, best_val_bacc=%.4f, best_val_f1=%.4f)",
+                fusion_strategy, best_val_loss, best_val_bacc, best_val_f1)
+
+    return {
+        'strategy': fusion_strategy,
+        'best_val_loss': best_val_loss,
+        'best_val_bacc': best_val_bacc,
+        'best_val_f1': best_val_f1,
+    }

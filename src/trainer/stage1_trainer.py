@@ -13,7 +13,10 @@ import os
 import torch
 
 from configs.logging_config import get_logger
-from configs.paths import CHECKPOINT_DIR, CKPT_MIL_FORMAT, CKPT_RECON, ensure_dirs
+from configs.paths import (
+    CHECKPOINT_DIR, CKPT_MIL_FORMAT, CKPT_RECON,
+    ALL_FUSION_STRATEGIES, get_fusion_ckpt_name, ensure_dirs
+)
 
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
@@ -111,29 +114,40 @@ def train_stage1(
         logger.warning("Reconstruction checkpoint not found at %s", best_recon_path)
 
     # ═══════════════════════════════════════════════════════════════
-    # STEP 3/3: Multi-modal Fusion
+    # STEP 3/3: Multi-modal Fusion — Train ALL 4 strategies
     # ═══════════════════════════════════════════════════════════════
-    logger.info("─── Initializing Fusion Model (strategy=%s) ───", fusion_strategy)
-    fusion_model = Fusion(
-        fusion_strategy=fusion_strategy,
-        input_dims=[dim] * 4,
-        num_modalities=4
-    ).to(device)
+    fusion_results = []
 
-    train_fuse_module(
-        mil_model=mil_model,
-        recon_model=recon_model,
-        fusion_model=fusion_model,
-        clinical_file=clinical_file,
-        feature_dir=feature_dir,
-        fusion_strategy=fusion_strategy,
-        epochs=fusion_epochs,
-        lr=fusion_lr
-    )
+    for strategy in ALL_FUSION_STRATEGIES:
+        logger.info("─── Initializing Fusion Model (strategy=%s) ───", strategy)
+        fusion_model = Fusion(
+            fusion_strategy=strategy,
+            input_dims=[dim] * 4,
+            num_modalities=4
+        ).to(device)
 
+        result = train_fuse_module(
+            mil_model=mil_model,
+            recon_model=recon_model,
+            fusion_model=fusion_model,
+            clinical_file=clinical_file,
+            feature_dir=feature_dir,
+            fusion_strategy=strategy,
+            epochs=fusion_epochs,
+            lr=fusion_lr
+        )
+        fusion_results.append(result)
+
+    # ─── Summary Table ───────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("STAGE 1 COMPLETE — All modules trained and saved.")
     logger.info("  Checkpoints in: %s", os.path.abspath(CHECKPOINT_DIR))
+    logger.info("─" * 60)
+    logger.info("  %-15s | %-10s | %-10s | %-10s", "Strategy", "Val Loss", "Val BAcc", "Val F1")
+    logger.info("  " + "-" * 55)
+    for r in fusion_results:
+        logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f",
+                    r['strategy'], r['best_val_loss'], r['best_val_bacc'], r['best_val_f1'])
     logger.info("=" * 60)
 
-    return mil_model, recon_model, fusion_model
+    return mil_model, recon_model, fusion_results

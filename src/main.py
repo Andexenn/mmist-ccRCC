@@ -23,7 +23,8 @@ import torch
 
 from configs.logging_config import setup_logger
 from configs.paths import (
-    CHECKPOINT_DIR, CKPT_MIL_FORMAT, CKPT_RECON, CKPT_FUSION, CKPT_PIPELINE,
+    CHECKPOINT_DIR, CKPT_MIL_FORMAT, CKPT_RECON,
+    ALL_FUSION_STRATEGIES, get_fusion_ckpt_name, get_pipeline_ckpt_name,
     ensure_dirs
 )
 from models.MIL.model import MILModel
@@ -63,9 +64,9 @@ TensorBoard:
                         help='Device: cuda or cpu (default: cuda)')
     parser.add_argument('--dim', type=int, default=768,
                         help='Feature dimension (default: 768)')
-    parser.add_argument('--fusion_strategy', type=str, default='early_mean',
-                        choices=['early_mean', 'early_cat', 'late_ws', 'late_lw'],
-                        help='Fusion strategy (default: early_mean)')
+    parser.add_argument('--fusion_strategy', type=str, default='all',
+                        choices=['early_mean', 'early_cat', 'late_ws', 'late_lw', 'all'],
+                        help='Fusion strategy: one of the 4 strategies, or "all" to train all (default: all)')
 
     # Stage 1 hyperparams
     parser.add_argument('--mil_lr', type=float, default=1e-3,
@@ -90,15 +91,21 @@ TensorBoard:
     return parser.parse_args()
 
 
-def run_stage2(args, mil_model=None, recon_model=None, fusion_model=None):
-    """Run Stage 2 end-to-end finetuning."""
+def run_stage2(args, mil_model=None, recon_model=None):
+    """Run Stage 2 end-to-end finetuning for all fusion strategies."""
     logger = setup_logger('mmist')
     device = args.device
 
-    if mil_model is None or recon_model is None or fusion_model is None:
+    # Determine which strategies to train
+    if args.fusion_strategy == 'all':
+        strategies = ALL_FUSION_STRATEGIES
+    else:
+        strategies = [args.fusion_strategy]
+
+    # Load base models if not provided
+    if mil_model is None or recon_model is None:
         logger.info("─── Loading Stage 1 checkpoints for Stage 2 ───")
 
-        # Initialize models
         mil_model = MILModel(
             feature_dir=args.feature_dir,
             clinical_dir=args.clinical_file,
@@ -106,21 +113,13 @@ def run_stage2(args, mil_model=None, recon_model=None, fusion_model=None):
             dim=args.dim
         )
         recon_model = ReconstructionModel(feature_dim=args.dim, hidden_dim=128).to(device)
-        fusion_model = Fusion(
-            fusion_strategy=args.fusion_strategy,
-            input_dims=[args.dim] * 4,
-            num_modalities=4
-        ).to(device)
 
-        # Load Stage 1 checkpoints
         mil_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality='MRI'))
         recon_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_RECON)
-        fusion_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_FUSION)
 
         for path, model, name in [
             (mil_ckpt, mil_model, 'MIL'),
             (recon_ckpt, recon_model, 'Reconstruction'),
-            (fusion_ckpt, fusion_model, 'Fusion')
         ]:
             if os.path.exists(path):
                 model.load_state_dict(torch.load(path, map_location=device))
@@ -132,15 +131,38 @@ def run_stage2(args, mil_model=None, recon_model=None, fusion_model=None):
                 )
                 sys.exit(1)
 
-    train_pipeline(
-        mil_model=mil_model,
-        recon_model=recon_model,
-        fusion_model=fusion_model,
-        clinical_file=args.clinical_file,
-        feature_dir=args.feature_dir,
-        epochs=args.pipeline_epochs,
-        lr=args.pipeline_lr
-    )
+    pipeline_results = []
+
+    for strategy in strategies:
+        logger.info("─── Stage 2: Training pipeline with fusion strategy=%s ───", strategy)
+
+        # Load the fusion checkpoint for this strategy
+        fusion_ckpt = os.path.join(CHECKPOINT_DIR, get_fusion_ckpt_name(strategy))
+        fusion_model = Fusion(
+            fusion_strategy=strategy,
+            input_dims=[args.dim] * 4,
+            num_modalities=4
+        ).to(device)
+
+        if os.path.exists(fusion_ckpt):
+            fusion_model.load_state_dict(torch.load(fusion_ckpt, map_location=device))
+            logger.info("Loaded Fusion checkpoint for [%s]: %s", strategy, fusion_ckpt)
+        else:
+            logger.warning("Fusion checkpoint not found for [%s] at %s — training from scratch", strategy, fusion_ckpt)
+
+        result = train_pipeline(
+            mil_model=mil_model,
+            recon_model=recon_model,
+            fusion_model=fusion_model,
+            clinical_file=args.clinical_file,
+            feature_dir=args.feature_dir,
+            fusion_strategy=strategy,
+            epochs=args.pipeline_epochs,
+            lr=args.pipeline_lr
+        )
+        pipeline_results.append(result)
+
+    return pipeline_results
 
 
 def main():
@@ -185,10 +207,12 @@ def main():
         args.clinical_file = master_csv
 
     # ─── Stage 1 ─────────────────────────────────────────────────
-    mil_model, recon_model, fusion_model = None, None, None
+    mil_model, recon_model = None, None
+    fusion_results = []
+    pipeline_results = []
 
     if args.stage in ['1', 'all']:
-        mil_model, recon_model, fusion_model = train_stage1(
+        mil_model, recon_model, fusion_results = train_stage1(
             feature_dir=args.feature_dir,
             clinical_file=args.clinical_file,
             device=args.device,
@@ -204,12 +228,32 @@ def main():
 
     # ─── Stage 2 ─────────────────────────────────────────────────
     if args.stage in ['2', 'all']:
-        run_stage2(args, mil_model, recon_model, fusion_model)
+        pipeline_results = run_stage2(args, mil_model, recon_model)
 
+    # ─── Final Summary ───────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("ALL TRAINING COMPLETE")
     logger.info("  Checkpoints: %s", os.path.abspath(CHECKPOINT_DIR))
     logger.info("  TensorBoard: tensorboard --logdir=./runs")
+
+    if fusion_results:
+        logger.info("─" * 60)
+        logger.info("  STAGE 1 FUSION — Best Results per Strategy:")
+        logger.info("  %-15s | %-10s | %-10s | %-10s", "Strategy", "Val Loss", "Val BAcc", "Val F1")
+        logger.info("  " + "-" * 55)
+        for r in fusion_results:
+            logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f",
+                        r['strategy'], r['best_val_loss'], r['best_val_bacc'], r['best_val_f1'])
+
+    if pipeline_results:
+        logger.info("─" * 60)
+        logger.info("  STAGE 2 PIPELINE — Best Results per Strategy:")
+        logger.info("  %-15s | %-10s | %-10s | %-10s", "Strategy", "Val Loss", "Val BAcc", "Val F1")
+        logger.info("  " + "-" * 55)
+        for r in pipeline_results:
+            logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f",
+                        r['strategy'], r['best_val_loss'], r['best_val_bacc'], r['best_val_f1'])
+
     logger.info("=" * 60)
 
 
