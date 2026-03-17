@@ -33,6 +33,7 @@ from models.Fusion.model import Fusion
 
 from trainer.stage1_trainer import train_stage1
 from trainer.stage2_trainer import train_pipeline
+from trainer.test_evaluator import evaluate_test_set
 from prepare_data import prepare_dataset
 
 
@@ -52,8 +53,8 @@ TensorBoard:
     )
 
     # Required
-    parser.add_argument('--stage', type=str, required=True, choices=['prepare', '1', '2', 'all'],
-                        help='Training stage: prepare (generate CSV), 1 (modules), 2 (finetune), or all')
+    parser.add_argument('--stage', type=str, required=True, choices=['prepare', '1', '2', 'all', 'test'],
+                        help='Training stage: prepare (generate CSV), 1 (modules), 2 (finetune), all, or test (evaluate on test set)')
     parser.add_argument('--feature_dir', type=str, required=True,
                         help='Path to extracted features directory')
     parser.add_argument('--clinical_file', type=str, required=True,
@@ -91,6 +92,38 @@ TensorBoard:
     return parser.parse_args()
 
 
+def _load_base_models(args, logger):
+    """Load MIL and Reconstruction models from Stage 1 checkpoints."""
+    device = args.device
+
+    mil_model = MILModel(
+        feature_dir=args.feature_dir,
+        clinical_dir=args.clinical_file,
+        device=device,
+        dim=args.dim
+    )
+    recon_model = ReconstructionModel(feature_dim=args.dim, hidden_dim=128).to(device)
+
+    mil_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality='MRI'))
+    recon_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_RECON)
+
+    for path, model, name in [
+        (mil_ckpt, mil_model, 'MIL'),
+        (recon_ckpt, recon_model, 'Reconstruction'),
+    ]:
+        if os.path.exists(path):
+            model.load_state_dict(torch.load(path, map_location=device))
+            logger.info("Loaded %s checkpoint: %s", name, path)
+        else:
+            logger.error(
+                "Missing %s checkpoint: %s — Run Stage 1 first! "
+                "(python main.py --stage 1 ...)", name, path
+            )
+            sys.exit(1)
+
+    return mil_model, recon_model
+
+
 def run_stage2(args, mil_model=None, recon_model=None):
     """Run Stage 2 end-to-end finetuning for all fusion strategies."""
     logger = setup_logger('mmist')
@@ -105,31 +138,7 @@ def run_stage2(args, mil_model=None, recon_model=None):
     # Load base models if not provided
     if mil_model is None or recon_model is None:
         logger.info("─── Loading Stage 1 checkpoints for Stage 2 ───")
-
-        mil_model = MILModel(
-            feature_dir=args.feature_dir,
-            clinical_dir=args.clinical_file,
-            device=device,
-            dim=args.dim
-        )
-        recon_model = ReconstructionModel(feature_dim=args.dim, hidden_dim=128).to(device)
-
-        mil_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality='MRI'))
-        recon_ckpt = os.path.join(CHECKPOINT_DIR, CKPT_RECON)
-
-        for path, model, name in [
-            (mil_ckpt, mil_model, 'MIL'),
-            (recon_ckpt, recon_model, 'Reconstruction'),
-        ]:
-            if os.path.exists(path):
-                model.load_state_dict(torch.load(path, map_location=device))
-                logger.info("Loaded %s checkpoint: %s", name, path)
-            else:
-                logger.error(
-                    "Missing %s checkpoint: %s — Run Stage 1 first! "
-                    "(python main.py --stage 1 ...)", name, path
-                )
-                sys.exit(1)
+        mil_model, recon_model = _load_base_models(args, logger)
 
     pipeline_results = []
 
@@ -163,6 +172,64 @@ def run_stage2(args, mil_model=None, recon_model=None):
         pipeline_results.append(result)
 
     return pipeline_results
+
+
+def run_test(args):
+    """Run test-set evaluation for all fusion strategies using best pipeline checkpoints."""
+    logger = setup_logger('mmist')
+    device = args.device
+
+    # Determine which strategies to evaluate
+    if args.fusion_strategy == 'all':
+        strategies = ALL_FUSION_STRATEGIES
+    else:
+        strategies = [args.fusion_strategy]
+
+    logger.info("─── Loading checkpoints for test evaluation ───")
+    mil_model, recon_model = _load_base_models(args, logger)
+
+    test_results = []
+
+    for strategy in strategies:
+        logger.info("─── Test: Evaluating pipeline with fusion strategy=%s ───", strategy)
+
+        fusion_model = Fusion(
+            fusion_strategy=strategy,
+            input_dims=[args.dim] * 4,
+            num_modalities=4
+        ).to(device)
+
+        # Try loading the Stage 2 pipeline checkpoint first (best end-to-end model)
+        pipeline_ckpt = os.path.join(CHECKPOINT_DIR, get_pipeline_ckpt_name(strategy))
+        if os.path.exists(pipeline_ckpt):
+            ckpt = torch.load(pipeline_ckpt, map_location=device)
+            mil_model.load_state_dict(ckpt['mil_state_dict'])
+            recon_model.load_state_dict(ckpt['recon_state_dict'])
+            fusion_model.load_state_dict(ckpt['fusion_state_dict'])
+            logger.info("Loaded Pipeline checkpoint for [%s]: %s", strategy, pipeline_ckpt)
+        else:
+            # Fallback: load Stage 1 fusion checkpoint
+            fusion_ckpt = os.path.join(CHECKPOINT_DIR, get_fusion_ckpt_name(strategy))
+            if os.path.exists(fusion_ckpt):
+                fusion_model.load_state_dict(torch.load(fusion_ckpt, map_location=device))
+                logger.info("Loaded Fusion checkpoint for [%s]: %s (no pipeline ckpt found)", strategy, fusion_ckpt)
+            else:
+                logger.warning(
+                    "No checkpoint found for [%s] — evaluating with random weights! "
+                    "Run Stage 1 and/or Stage 2 first.", strategy
+                )
+
+        result = evaluate_test_set(
+            mil_model=mil_model,
+            recon_model=recon_model,
+            fusion_model=fusion_model,
+            clinical_file=args.clinical_file,
+            feature_dir=args.feature_dir,
+            fusion_strategy=strategy,
+        )
+        test_results.append(result)
+
+    return test_results
 
 
 def main():
@@ -230,6 +297,11 @@ def main():
     if args.stage in ['2', 'all']:
         pipeline_results = run_stage2(args, mil_model, recon_model)
 
+    # ─── Test Evaluation ─────────────────────────────────────────
+    test_results = []
+    if args.stage == 'test':
+        test_results = run_test(args)
+
     # ─── Final Summary ───────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("ALL TRAINING COMPLETE")
@@ -253,6 +325,15 @@ def main():
         for r in pipeline_results:
             logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f",
                         r['strategy'], r['best_val_loss'], r['best_val_bacc'], r['best_val_f1'])
+
+    if test_results:
+        logger.info("─" * 60)
+        logger.info("  TEST SET — Results per Strategy:")
+        logger.info("  %-15s | %-10s | %-10s | %-10s | %-8s", "Strategy", "Test Loss", "Test BAcc", "Test F1", "Samples")
+        logger.info("  " + "-" * 65)
+        for r in test_results:
+            logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f | %-8d",
+                        r['strategy'], r['test_loss'], r['test_bacc'], r['test_f1'], r['test_samples'])
 
     logger.info("=" * 60)
 

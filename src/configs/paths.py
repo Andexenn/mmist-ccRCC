@@ -42,6 +42,11 @@ def get_pipeline_tb_dir(strategy: str) -> str:
     return os.path.join(TENSORBOARD_ROOT, f'stage2_pipeline_{strategy}')
 
 
+def get_test_tb_dir(strategy: str) -> str:
+    """Return strategy-specific TensorBoard dir for test evaluation, e.g. runs/test_early_mean/"""
+    return os.path.join(TENSORBOARD_ROOT, f'test_{strategy}')
+
+
 def get_fusion_ckpt_name(strategy: str) -> str:
     """Return strategy-specific checkpoint filename, e.g. best_fusion_early_mean.pth"""
     return f'best_fusion_{strategy}.pth'

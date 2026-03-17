@@ -31,6 +31,13 @@ class FeatureBagDataset(Dataset):
         self.df = df[df['Split'] == split].reset_index(drop=True)
         self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
 
+        if len(self.df) == 0:
+            logger.warning(
+                "No data found for modality=%s, split=%s — dataset will be empty",
+                modality, split
+            )
+            return
+
         if split == 'train':
             self._apply_oversample()
 

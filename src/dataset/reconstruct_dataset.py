@@ -41,6 +41,12 @@ class ReconstructDataset(Dataset):
         # Deduplicate to one row per patient for iteration
         self.df = split_df.drop_duplicates(subset='case_id').reset_index(drop=True)
 
+        if len(self.df) == 0:
+            logger.warning(
+                "No data found for split=%s — dataset will be empty", split
+            )
+            return
+
         if split == 'train':
             self._apply_oversample()
 
