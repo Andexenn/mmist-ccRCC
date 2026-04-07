@@ -41,6 +41,8 @@ def train_stage1(
     recon_batch_size: int = 14,
     fusion_lr: float = 1e-3,
     fusion_epochs: int = 100,
+    train_split: str = 'train',
+    val_split: str = 'val',
 ):
     """
     Full Stage 1 pipeline: MIL → Reconstruction → Fusion.
@@ -79,7 +81,7 @@ def train_stage1(
         dim=dim
     )
 
-    train_mil_survival(mil_model, lr=mil_lr)
+    train_mil_survival(mil_model, lr=mil_lr, train_split=train_split, val_split='test')
 
     # Load best MIL weights (use MRI as the reference — it's loaded last)
     best_mil_path = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality='MRI'))
@@ -102,7 +104,9 @@ def train_stage1(
         feature_dir=feature_dir,
         n_epochs=recon_epochs,
         lr=recon_lr,
-        batch_size=recon_batch_size
+        batch_size=recon_batch_size,
+        train_split=train_split,
+        val_split=val_split
     )
 
     # Load best Reconstruction weights
@@ -134,7 +138,9 @@ def train_stage1(
             feature_dir=feature_dir,
             fusion_strategy=strategy,
             epochs=fusion_epochs,
-            lr=fusion_lr
+            lr=fusion_lr,
+            train_split=train_split,
+            val_split=val_split
         )
         fusion_results.append(result)
 

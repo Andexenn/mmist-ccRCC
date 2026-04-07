@@ -37,7 +37,9 @@ def train_pipeline(
     bacc_mods: List = [1.0, 1.0, 1.0, 1.0],
     epochs: int = 100,
     lr: float = 1e-5,
-    death_weight: float = 1.0
+    death_weight: float = 1.0,
+    train_split: str = 'train',
+    val_split: str = 'val'
 ):
     """
     Stage 2: Finetune the entire pipeline end-to-end.
@@ -68,8 +70,8 @@ def train_pipeline(
     logger.info("Total trainable params: %d", total_params)
 
     # ─── DataLoaders ─────────────────────────────────────────────
-    train_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='train')
-    val_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='val', shuffle=False)
+    train_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split=train_split)
+    val_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split=val_split, shuffle=False)
 
     # ─── Optimizer & Scheduler ───────────────────────────────────
     all_params = list(mil_model.parameters()) + list(recon_model.parameters()) + list(fusion_model.parameters())

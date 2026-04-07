@@ -124,7 +124,8 @@ def _load_base_models(args, logger):
     return mil_model, recon_model
 
 
-def run_stage2(args, mil_model=None, recon_model=None):
+def run_stage2(args, mil_model=None, recon_model=None,
+               train_split='train', val_split='val'):
     """Run Stage 2 end-to-end finetuning for all fusion strategies."""
     logger = setup_logger('mmist')
     device = args.device
@@ -167,7 +168,9 @@ def run_stage2(args, mil_model=None, recon_model=None):
             feature_dir=args.feature_dir,
             fusion_strategy=strategy,
             epochs=args.pipeline_epochs,
-            lr=args.pipeline_lr
+            lr=args.pipeline_lr,
+            train_split=train_split,
+            val_split=val_split
         )
         pipeline_results.append(result)
 
@@ -175,18 +178,45 @@ def run_stage2(args, mil_model=None, recon_model=None):
 
 
 def run_test(args):
-    """Run test-set evaluation for all fusion strategies using best pipeline checkpoints."""
+    """Run --stage test: train with combined train+val data, then evaluate on test split."""
     logger = setup_logger('mmist')
     device = args.device
+
+    logger.info("═" * 60)
+    logger.info("TEST MODE: Training on train+val, evaluating on test")
+    logger.info("═" * 60)
+
+    # ─── Stage 1: Train with combined train+val ──────────────────
+    mil_model, recon_model, fusion_results = train_stage1(
+        feature_dir=args.feature_dir,
+        clinical_file=args.clinical_file,
+        device=device,
+        dim=args.dim,
+        fusion_strategy=args.fusion_strategy,
+        mil_lr=args.mil_lr,
+        recon_lr=args.recon_lr,
+        recon_epochs=args.recon_epochs,
+        recon_batch_size=args.recon_batch_size,
+        fusion_lr=args.fusion_lr,
+        fusion_epochs=args.fusion_epochs,
+        train_split='train_val',
+        val_split='test',
+    )
+
+    # ─── Stage 2: Finetune with combined train+val ───────────────
+    pipeline_results = run_stage2(
+        args, mil_model, recon_model,
+        train_split='train_val', val_split='test'
+    )
+
+    # ─── Final Evaluation on Test Split ──────────────────────────
+    logger.info("─── Final test set evaluation ───")
 
     # Determine which strategies to evaluate
     if args.fusion_strategy == 'all':
         strategies = ALL_FUSION_STRATEGIES
     else:
         strategies = [args.fusion_strategy]
-
-    logger.info("─── Loading checkpoints for test evaluation ───")
-    mil_model, recon_model = _load_base_models(args, logger)
 
     test_results = []
 
@@ -199,7 +229,7 @@ def run_test(args):
             num_modalities=4
         ).to(device)
 
-        # Try loading the Stage 2 pipeline checkpoint first (best end-to-end model)
+        # Load the best Stage 2 pipeline checkpoint
         pipeline_ckpt = os.path.join(CHECKPOINT_DIR, get_pipeline_ckpt_name(strategy))
         if os.path.exists(pipeline_ckpt):
             ckpt = torch.load(pipeline_ckpt, map_location=device)
@@ -215,8 +245,7 @@ def run_test(args):
                 logger.info("Loaded Fusion checkpoint for [%s]: %s (no pipeline ckpt found)", strategy, fusion_ckpt)
             else:
                 logger.warning(
-                    "No checkpoint found for [%s] — evaluating with random weights! "
-                    "Run Stage 1 and/or Stage 2 first.", strategy
+                    "No checkpoint found for [%s] — evaluating with random weights!", strategy
                 )
 
         result = evaluate_test_set(
@@ -229,7 +258,7 @@ def run_test(args):
         )
         test_results.append(result)
 
-    return test_results
+    return test_results, fusion_results, pipeline_results
 
 
 def main():
@@ -300,7 +329,7 @@ def main():
     # ─── Test Evaluation ─────────────────────────────────────────
     test_results = []
     if args.stage == 'test':
-        test_results = run_test(args)
+        test_results, fusion_results, pipeline_results = run_test(args)
 
     # ─── Final Summary ───────────────────────────────────────────
     logger.info("=" * 60)

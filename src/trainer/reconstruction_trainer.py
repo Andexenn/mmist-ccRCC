@@ -31,7 +31,9 @@ def train_reconstruction_module(
     feature_dir: str,
     n_epochs: int = 600,
     lr: float = 1e-3,
-    batch_size: int = 14
+    batch_size: int = 14,
+    train_split: str = 'train',
+    val_split: str = 'val'
 ):
     """
     Train the missing modality reconstruction module.
@@ -60,10 +62,10 @@ def train_reconstruction_module(
 
     # ─── DataLoaders ─────────────────────────────────────────────
     train_dataloader = get_reconstruct_dataloader(
-        clinical_file, feature_dir, split='train', batch_size=batch_size
+        clinical_file, feature_dir, split=train_split, batch_size=batch_size
     )
     val_dataloader = get_reconstruct_dataloader(
-        clinical_file, feature_dir, split='val', shuffle=False, batch_size=batch_size
+        clinical_file, feature_dir, split=val_split, shuffle=False, batch_size=batch_size
     )
     logger.info("DataLoaders ready — train: %d batches, val: %d batches",
                 len(train_dataloader), len(val_dataloader))

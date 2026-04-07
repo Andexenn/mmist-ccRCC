@@ -19,7 +19,7 @@ class FeatureBagDataset(Dataset):
             clinical_file (str): Containing the clinical infor
             feature_dir (str): The feature folder's path
             modality (str): 'CT' or 'MRI' or 'WSI'
-            split (str): 'train' or 'test'
+            split (str): 'train', 'test', 'val', or 'train_val' (combined train+val)
             type (str): 'MIL' or 'Reconstruction' or 'Fusion'
         """
 
@@ -28,8 +28,19 @@ class FeatureBagDataset(Dataset):
         self.split = split
         self.modality = modality
         df = pd.read_csv(self.clinical_file)
-        self.df = df[df['Split'] == split].reset_index(drop=True)
-        self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
+
+        # Support combined train+val split for --stage test
+        if split == 'train_val':
+            self.df = df[df['Split'].isin(['train', 'val'])].reset_index(drop=True)
+            self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
+            # Track original splits for file path resolution
+            self._original_splits = {}
+            for _, row in df[df['Split'].isin(['train', 'val'])].iterrows():
+                self._original_splits[row['case_id']] = row['Split']
+        else:
+            self.df = df[df['Split'] == split].reset_index(drop=True)
+            self.df = self.df[self.df['Modality'] == modality].reset_index(drop=True)
+            self._original_splits = None
 
         if len(self.df) == 0:
             logger.warning(
@@ -38,7 +49,7 @@ class FeatureBagDataset(Dataset):
             )
             return
 
-        if split == 'train':
+        if split in ('train', 'train_val'):
             self._apply_oversample()
 
 
@@ -116,34 +127,49 @@ class FeatureBagDataset(Dataset):
         patient_id = row['case_id']
         label = torch.tensor(int(row['vital_status_12'])).long()
 
+        # Determine which split directories to try for file loading
+        if self.split == 'train_val':
+            splits_to_try = []
+            if self._original_splits and patient_id in self._original_splits:
+                splits_to_try.append(self._original_splits[patient_id])
+            for s in ['train', 'val']:
+                if s not in splits_to_try:
+                    splits_to_try.append(s)
+        else:
+            splits_to_try = [self.split]
+
         try:
-            # Use file_name + modality + split to build the correct path
-            # Structure: feature_dir/Modality/Split/file_name
-            if 'file_name' in row.index:
-                bag_folder = os.path.join(
-                    self.feature_dir, self.modality, self.split, row['file_name']
-                )
-            else:
-                # Fallback for legacy CSVs without file_name column
-                bag_folder = os.path.join(self.feature_dir, patient_id)
-
             feature_list = []
+            for split_dir in splits_to_try:
+                # Use file_name + modality + split to build the correct path
+                # Structure: feature_dir/Modality/Split/file_name
+                if 'file_name' in row.index:
+                    bag_folder = os.path.join(
+                        self.feature_dir, self.modality, split_dir, row['file_name']
+                    )
+                else:
+                    # Fallback for legacy CSVs without file_name column
+                    bag_folder = os.path.join(self.feature_dir, patient_id)
 
-            if os.path.isdir(bag_folder):
-                # Entry is a folder containing .pt files
-                file_paths = sorted(glob.glob(os.path.join(bag_folder, "*.pt")))
-                for file_path in file_paths:
-                    f = self._safe_load_tensor(file_path)
+                if os.path.isdir(bag_folder):
+                    # Entry is a folder containing .pt files
+                    file_paths = sorted(glob.glob(os.path.join(bag_folder, "*.pt")))
+                    for file_path in file_paths:
+                        f = self._safe_load_tensor(file_path)
+                        if f is not None:
+                            feature_list.append(f)
+                elif os.path.isfile(bag_folder) or os.path.isfile(bag_folder + '.pt'):
+                    # Entry is a single .pt file
+                    fpath = bag_folder if os.path.isfile(bag_folder) else bag_folder + '.pt'
+                    f = self._safe_load_tensor(fpath)
                     if f is not None:
                         feature_list.append(f)
-            elif os.path.isfile(bag_folder) or os.path.isfile(bag_folder + '.pt'):
-                # Entry is a single .pt file
-                fpath = bag_folder if os.path.isfile(bag_folder) else bag_folder + '.pt'
-                f = self._safe_load_tensor(fpath)
-                if f is not None:
-                    feature_list.append(f)
-            else:
-                logger.error("[ERR]:: %s does not exist.", bag_folder)
+
+                if feature_list:
+                    break  # Found data, no need to try other splits
+
+            if not feature_list:
+                logger.error("[ERR]:: No data found for patient=%s in any split dir.", patient_id)
 
         except Exception as e:
             logger.error("Unexpected error loading sample idx=%d (patient=%s): %s", idx, patient_id, e)

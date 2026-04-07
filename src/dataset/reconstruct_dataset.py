@@ -25,7 +25,17 @@ class ReconstructDataset(Dataset):
         self.split = split
 
         full_df = pd.read_csv(self.clinical_dir)
-        split_df = full_df[full_df['Split'] == split].reset_index(drop=True)
+
+        # Support combined train+val split for --stage test
+        if split == 'train_val':
+            split_df = full_df[full_df['Split'].isin(['train', 'val'])].reset_index(drop=True)
+            # Track which original split each case came from (for file path resolution)
+            self._original_splits = {}
+            for _, row in full_df[full_df['Split'].isin(['train', 'val'])].iterrows():
+                self._original_splits[row['case_id']] = row['Split']
+        else:
+            split_df = full_df[full_df['Split'] == split].reset_index(drop=True)
+            self._original_splits = None
 
         # Build per-patient file_name lookup: {case_id: {modality: file_name}}
         self.file_name_lookup = {}
@@ -47,7 +57,7 @@ class ReconstructDataset(Dataset):
             )
             return
 
-        if split == 'train':
+        if split in ('train', 'train_val'):
             self._apply_oversample()
 
     def _apply_oversample(self):
@@ -106,28 +116,45 @@ class ReconstructDataset(Dataset):
         if patient_id in self.file_name_lookup:
             file_name = self.file_name_lookup[patient_id].get(modality)
 
-        if file_name:
-            bag_path = os.path.join(self.feature_dir, modality, self.split, file_name)
+        # Determine which split subdirectory to look in
+        if self.split == 'train_val':
+            # For combined split, resolve the original split for this patient
+            splits_to_try = []
+            if self._original_splits and patient_id in self._original_splits:
+                splits_to_try.append(self._original_splits[patient_id])
+            # Fallback: try both
+            for s in ['train', 'val']:
+                if s not in splits_to_try:
+                    splits_to_try.append(s)
         else:
-            # Fallback for legacy structure
-            bag_path = os.path.join(self.feature_dir, patient_id)
+            splits_to_try = [self.split]
 
         feature_list = []
 
-        try:
-            if os.path.isdir(bag_path):
-                file_paths = sorted(glob.glob(os.path.join(bag_path, "*.pt")))
-                for fp in file_paths:
-                    f = self._safe_load_tensor(fp)
+        for split_dir in splits_to_try:
+            if file_name:
+                bag_path = os.path.join(self.feature_dir, modality, split_dir, file_name)
+            else:
+                # Fallback for legacy structure
+                bag_path = os.path.join(self.feature_dir, patient_id)
+
+            try:
+                if os.path.isdir(bag_path):
+                    file_paths = sorted(glob.glob(os.path.join(bag_path, "*.pt")))
+                    for fp in file_paths:
+                        f = self._safe_load_tensor(fp)
+                        if f is not None:
+                            feature_list.append(f)
+                elif os.path.isfile(bag_path) or os.path.isfile(bag_path + '.pt'):
+                    fpath = bag_path if os.path.isfile(bag_path) else bag_path + '.pt'
+                    f = self._safe_load_tensor(fpath)
                     if f is not None:
                         feature_list.append(f)
-            elif os.path.isfile(bag_path) or os.path.isfile(bag_path + '.pt'):
-                fpath = bag_path if os.path.isfile(bag_path) else bag_path + '.pt'
-                f = self._safe_load_tensor(fpath)
-                if f is not None:
-                    feature_list.append(f)
-        except Exception as e:
-            logger.error("Error loading bag for patient=%s modality=%s: %s", patient_id, modality, e)
+            except Exception as e:
+                logger.error("Error loading bag for patient=%s modality=%s: %s", patient_id, modality, e)
+
+            if feature_list:
+                break  # Found data, no need to try other splits
 
         if len(feature_list) > 0:
             return feature_list, 1

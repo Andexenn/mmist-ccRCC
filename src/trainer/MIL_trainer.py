@@ -202,19 +202,25 @@ def train_single_modality(
         logger.warning("[MIL/%s] No improvement was observed during training!", modality)
 
 
-def train_mil_survival(mil_model, n_epochs: int = 100, lr: float = 1e-3):
+def train_mil_survival(mil_model, n_epochs: int = 100, lr: float = 1e-3,
+                       train_split: str = 'train', val_split: str = 'test'):
     """
     Orchestrator: train WSI, CT, MRI MIL models sequentially.
     Uses per-modality epoch counts from Table A.1.
+
+    Args:
+        train_split: Split to use for training ('train' or 'train_val')
+        val_split: Split to use for validation ('test' or 'test' when using train_val)
     """
     logger.info("=" * 60)
     logger.info("STAGE 1 — STEP 1/3: MIL Selection Training")
+    logger.info("  train_split=%s | val_split=%s", train_split, val_split)
     logger.info("=" * 60)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    train_loaders = mil_model._get_dataloader(split='train', shuffle=True)
-    val_loaders = mil_model._get_dataloader(split='test', shuffle=False)
+    train_loaders = mil_model._get_dataloader(split=train_split, shuffle=True)
+    val_loaders = mil_model._get_dataloader(split=val_split, shuffle=False)
 
     loaders = {
         'WSI': {'train': train_loaders[0], 'val': val_loaders[0]},

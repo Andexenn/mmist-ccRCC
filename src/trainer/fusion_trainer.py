@@ -37,7 +37,9 @@ def train_fuse_module(
     epochs: int = 100,
     lr: float = 1e-3,
     bacc_mods: List = [1.0, 1.0, 1.0, 1.0],
-    death_weight: float = 1.0
+    death_weight: float = 1.0,
+    train_split: str = 'train',
+    val_split: str = 'val'
 ):
     """Train the fusion module with MIL and Reconstruction frozen."""
 
@@ -72,8 +74,8 @@ def train_fuse_module(
     logger.info("Fusion model trainable params: %d", trainable_params)
 
     # ─── DataLoaders ─────────────────────────────────────────────
-    train_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='train')
-    val_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split='val', shuffle=False)
+    train_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split=train_split)
+    val_loader = get_reconstruct_dataloader(clinical_file, feature_dir, split=val_split, shuffle=False)
 
     # ─── Optimizer & Scheduler ───────────────────────────────────
     optimizer = optim.AdamW(fusion_model.parameters(), lr=lr, weight_decay=1e-5)
