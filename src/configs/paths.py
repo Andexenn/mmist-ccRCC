@@ -12,9 +12,9 @@ TensorBoard Usage:
 import os
 
 # ─── Base directories (relative to src/) ───
-TENSORBOARD_ROOT = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/runs/runs-MMIST/v1.10'         # TensorBoard event logs
-CHECKPOINT_DIR   = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/checkpoint/checkpoint-MMIST/v1.10'  # Model checkpoint .pth files
-FILE_LOG_DIR     = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/logs/logs-MMIST/v1.10'         # File-based text logs (.log)
+TENSORBOARD_ROOT = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/runs/runs-MMIST/v1.11'         # TensorBoard event logs
+CHECKPOINT_DIR   = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/checkpoint/checkpoint-MMIST/v1.11'  # Model checkpoint .pth files
+FILE_LOG_DIR     = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/logs/logs-MMIST/v1.11'         # File-based text logs (.log)
 
 # ─── TensorBoard sub-directories for each module ───
 TB_MIL_DIR       = os.path.join(TENSORBOARD_ROOT, 'stage1_mil')

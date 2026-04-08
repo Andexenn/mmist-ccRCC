@@ -284,7 +284,7 @@ def run_ablation(args):
     elif args.ablation_mode == '3_mod':
         modes = ['3_mod']
     elif args.ablation_mode == 'all':
-        modes = ['individual', '2_mod', '3_mod']
+        modes = ['individual', '2_mod', '3_mod', '4_mod']
         
     mil_model = MILModel(
         feature_dir=args.feature_dir,
@@ -314,6 +314,8 @@ def run_ablation(args):
         combos.extend(list(itertools.combinations(base_mods, 2)))
     if '3_mod' in modes:
         combos.extend(list(itertools.combinations(base_mods, 3)))
+    if '4_mod' in modes:
+        combos.extend(list(itertools.combinations(base_mods, 4)))
         
     for combo in combos:
         active_modalities = list(combo)
