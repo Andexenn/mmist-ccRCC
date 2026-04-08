@@ -16,7 +16,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
-from configs.paths import TB_RECON_DIR, CHECKPOINT_DIR, CKPT_RECON
+from configs.paths import TB_RECON_DIR, CHECKPOINT_DIR, get_recon_ckpt_name_ablation, get_tb_dir_ablation
 from dataset.reconstruct_dataset import get_reconstruct_dataloader
 from models.Reconstruction.model import ReconstructionModel
 from models.MIL.model import MILModel
@@ -33,7 +33,8 @@ def train_reconstruction_module(
     lr: float = 1e-3,
     batch_size: int = 14,
     train_split: str = 'train',
-    val_split: str = 'val'
+    val_split: str = 'val',
+    active_modalities: list = ['WSI', 'CT', 'MRI', 'Clinical']
 ):
     """
     Train the missing modality reconstruction module.
@@ -44,10 +45,13 @@ def train_reconstruction_module(
     logger.info("=" * 60)
     logger.info("STAGE 1 — STEP 2/3: Reconstruction Training")
     logger.info("  epochs=%d | lr=%.2e | batch_size=%d", n_epochs, lr, batch_size)
+    logger.info("  active_modalities=%s", active_modalities)
     logger.info("=" * 60)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    writer = SummaryWriter(log_dir=TB_RECON_DIR)
+    tb_dir = get_tb_dir_ablation('stage1_reconstruction', active_modalities)
+    os.makedirs(tb_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=tb_dir)
     device = next(recon_model.parameters()).device
 
     # ─── Freeze MIL ──────────────────────────────────────────────
@@ -101,7 +105,10 @@ def train_reconstruction_module(
                 cli_feat = data['cli_feat'].to(device)
 
                 masks = torch.tensor([
-                    data['wsi_mask'], data['ct_mask'], data['mri_mask'], data['cli_mask']
+                    data['wsi_mask'] if 'WSI' in active_modalities else 0, 
+                    data['ct_mask'] if 'CT' in active_modalities else 0, 
+                    data['mri_mask'] if 'MRI' in active_modalities else 0, 
+                    data['cli_mask'] if 'Clinical' in active_modalities else 0
                 ]).float().to(device)
 
                 # Step 1: MIL feature selection (frozen)
@@ -155,7 +162,10 @@ def train_reconstruction_module(
                     cli_feat = data['cli_feat'].to(device)
 
                     masks = torch.tensor([
-                        data['wsi_mask'], data['ct_mask'], data['mri_mask'], data['cli_mask']
+                        data['wsi_mask'] if 'WSI' in active_modalities else 0, 
+                        data['ct_mask'] if 'CT' in active_modalities else 0, 
+                        data['mri_mask'] if 'MRI' in active_modalities else 0, 
+                        data['cli_mask'] if 'Clinical' in active_modalities else 0
                     ]).float().to(device)
 
                     _, wsi_best, _ = mil_model.forward_single_bag(wsi_bag, modality='WSI', add_noise=False)
@@ -204,7 +214,8 @@ def train_reconstruction_module(
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            save_path = os.path.join(CHECKPOINT_DIR, CKPT_RECON)
+            ckpt_name = get_recon_ckpt_name_ablation(active_modalities)
+            save_path = os.path.join(CHECKPOINT_DIR, ckpt_name)
             torch.save(recon_model.state_dict(), save_path)
             logger.info("  >> Checkpoint saved: %s (val_loss=%.6f)", save_path, best_val_loss)
         else:

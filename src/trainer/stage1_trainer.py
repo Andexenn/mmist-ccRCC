@@ -14,8 +14,8 @@ import torch
 
 from configs.logging_config import get_logger
 from configs.paths import (
-    CHECKPOINT_DIR, CKPT_MIL_FORMAT, CKPT_RECON,
-    ALL_FUSION_STRATEGIES, get_fusion_ckpt_name, ensure_dirs
+    CHECKPOINT_DIR, CKPT_MIL_FORMAT, get_recon_ckpt_name_ablation,
+    ALL_FUSION_STRATEGIES, get_fusion_ckpt_name_ablation, ensure_dirs
 )
 
 from models.MIL.model import MILModel
@@ -43,6 +43,7 @@ def train_stage1(
     fusion_epochs: int = 100,
     train_split: str = 'train',
     val_split: str = 'val',
+    active_modalities: list = ['WSI', 'CT', 'MRI', 'Clinical']
 ):
     """
     Full Stage 1 pipeline: MIL → Reconstruction → Fusion.
@@ -68,6 +69,7 @@ def train_stage1(
     logger.info("  clinical_file = %s", clinical_file)
     logger.info("  device        = %s", device)
     logger.info("  fusion_strategy = %s", fusion_strategy)
+    logger.info("  active_modalities = %s", active_modalities)
     logger.info("=" * 60)
 
     # ═══════════════════════════════════════════════════════════════
@@ -106,11 +108,13 @@ def train_stage1(
         lr=recon_lr,
         batch_size=recon_batch_size,
         train_split=train_split,
-        val_split=val_split
+        val_split=val_split,
+        active_modalities=active_modalities
     )
 
     # Load best Reconstruction weights
-    best_recon_path = os.path.join(CHECKPOINT_DIR, CKPT_RECON)
+    ckpt_recon_name = get_recon_ckpt_name_ablation(active_modalities)
+    best_recon_path = os.path.join(CHECKPOINT_DIR, ckpt_recon_name)
     if os.path.exists(best_recon_path):
         recon_model.load_state_dict(torch.load(best_recon_path, map_location=device))
         logger.info("Loaded best Reconstruction checkpoint: %s", best_recon_path)
@@ -140,7 +144,8 @@ def train_stage1(
             epochs=fusion_epochs,
             lr=fusion_lr,
             train_split=train_split,
-            val_split=val_split
+            val_split=val_split,
+            active_modalities=active_modalities
         )
         fusion_results.append(result)
 

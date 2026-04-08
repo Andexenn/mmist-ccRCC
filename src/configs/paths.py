@@ -12,9 +12,9 @@ TensorBoard Usage:
 import os
 
 # ─── Base directories (relative to src/) ───
-TENSORBOARD_ROOT = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/runs/v1.7'         # TensorBoard event logs
-CHECKPOINT_DIR   = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/checkpoint/v1.7'  # Model checkpoint .pth files
-FILE_LOG_DIR     = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/logs/v1.7'         # File-based text logs (.log)
+TENSORBOARD_ROOT = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/runs/runs-MMIST/v1.10'         # TensorBoard event logs
+CHECKPOINT_DIR   = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/checkpoint/checkpoint-MMIST/v1.10'  # Model checkpoint .pth files
+FILE_LOG_DIR     = '/mmlab_students/storageStudents/nguyenvd/UIT2024_medicare/RunBaseline/MMIST/logs/logs-MMIST/v1.10'         # File-based text logs (.log)
 
 # ─── TensorBoard sub-directories for each module ───
 TB_MIL_DIR       = os.path.join(TENSORBOARD_ROOT, 'stage1_mil')
@@ -55,6 +55,55 @@ def get_fusion_ckpt_name(strategy: str) -> str:
 def get_pipeline_ckpt_name(strategy: str) -> str:
     """Return strategy-specific checkpoint filename, e.g. best_pipeline_early_mean.pth"""
     return f'best_pipeline_{strategy}.pth'
+
+
+def get_ablation_suffix(active_modalities: list) -> str:
+    """Return a sorted underscore-separated string of modalities, e.g. 'CT_MRI'."""
+    if not active_modalities:
+        return 'all'
+    if len(active_modalities) == 4:
+        return 'all'
+    return '_'.join(sorted(active_modalities))
+
+
+def get_recon_ckpt_name_ablation(active_modalities: list) -> str:
+    """Return ablation-specific checkpoint filename for Reconstruction."""
+    suffix = get_ablation_suffix(active_modalities)
+    if suffix == 'all':
+        return CKPT_RECON
+    return f'best_reconstruction_{suffix}.pth'
+
+
+def get_fusion_ckpt_name_ablation(strategy: str, active_modalities: list) -> str:
+    """Return ablation-specific checkpoint filename for Stage 1 Fusion."""
+    suffix = get_ablation_suffix(active_modalities)
+    if suffix == 'all':
+        return f'best_fusion_{strategy}.pth'
+    return f'best_fusion_{strategy}_{suffix}.pth'
+
+
+def get_pipeline_ckpt_name_ablation(strategy: str, active_modalities: list) -> str:
+    """Return ablation-specific checkpoint filename for Stage 2 Pipeline."""
+    suffix = get_ablation_suffix(active_modalities)
+    if suffix == 'all':
+        return f'best_pipeline_{strategy}.pth'
+    return f'best_pipeline_{strategy}_{suffix}.pth'
+
+
+def get_test_tb_dir_ablation(strategy: str, active_modalities: list) -> str:
+    """Return ablation-specific TensorBoard dir for test evaluation."""
+    suffix = get_ablation_suffix(active_modalities)
+    if suffix == 'all':
+        return os.path.join(TENSORBOARD_ROOT, f'test_{strategy}')
+    return os.path.join(TENSORBOARD_ROOT, f'test_{strategy}_{suffix}')
+
+
+def get_tb_dir_ablation(base_dir_name: str, active_modalities: list) -> str:
+    """Return ablation-specific generic TB dir, e.g. stage1_reconstruction_CT_MRI."""
+    suffix = get_ablation_suffix(active_modalities)
+    if suffix == 'all':
+        return os.path.join(TENSORBOARD_ROOT, base_dir_name)
+    return os.path.join(TENSORBOARD_ROOT, f'{base_dir_name}_{suffix}')
 
 
 def ensure_dirs():

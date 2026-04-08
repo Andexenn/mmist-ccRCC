@@ -17,7 +17,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
-from configs.paths import CHECKPOINT_DIR, get_pipeline_tb_dir, get_pipeline_ckpt_name
+from configs.paths import CHECKPOINT_DIR, get_pipeline_tb_dir, get_pipeline_ckpt_name, get_pipeline_ckpt_name_ablation, get_tb_dir_ablation
 from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
@@ -39,7 +39,8 @@ def train_pipeline(
     lr: float = 1e-5,
     death_weight: float = 1.0,
     train_split: str = 'train',
-    val_split: str = 'val'
+    val_split: str = 'val',
+    active_modalities: list = ['WSI', 'CT', 'MRI', 'Clinical']
 ):
     """
     Stage 2: Finetune the entire pipeline end-to-end.
@@ -48,10 +49,11 @@ def train_pipeline(
     logger.info("=" * 60)
     logger.info("STAGE 2: End-to-End Pipeline Finetuning [%s]", fusion_strategy)
     logger.info("  epochs=%d | lr=%.2e | death_weight=%.1f", epochs, lr, death_weight)
+    logger.info("  active_modalities=%s", active_modalities)
     logger.info("=" * 60)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    tb_dir = get_pipeline_tb_dir(fusion_strategy)
+    tb_dir = get_tb_dir_ablation(f'stage2_pipeline_{fusion_strategy}', active_modalities)
     os.makedirs(tb_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=tb_dir)
     device = next(fusion_model.parameters()).device
@@ -113,10 +115,10 @@ def train_pipeline(
                 continue
 
             masks = [
-                torch.tensor([[data['wsi_mask']]]).float().to(device),
-                torch.tensor([[data['ct_mask']]]).float().to(device),
-                torch.tensor([[data['mri_mask']]]).float().to(device),
-                torch.tensor([[data['cli_mask']]]).float().to(device),
+                torch.tensor([[data['wsi_mask']]]).float().to(device) if 'WSI' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['ct_mask']]]).float().to(device) if 'CT' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['mri_mask']]]).float().to(device) if 'MRI' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['cli_mask']]]).float().to(device) if 'Clinical' in active_modalities else torch.zeros((1, 1)).to(device),
             ]
 
             optimizer.zero_grad(set_to_none=True)
@@ -189,10 +191,10 @@ def train_pipeline(
                     continue
 
                 masks = [
-                    torch.tensor([[data['wsi_mask']]]).float().to(device),
-                    torch.tensor([[data['ct_mask']]]).float().to(device),
-                    torch.tensor([[data['mri_mask']]]).float().to(device),
-                    torch.tensor([[data['cli_mask']]]).float().to(device),
+                    torch.tensor([[data['wsi_mask']]]).float().to(device) if 'WSI' in active_modalities else torch.zeros((1, 1)).to(device),
+                    torch.tensor([[data['ct_mask']]]).float().to(device) if 'CT' in active_modalities else torch.zeros((1, 1)).to(device),
+                    torch.tensor([[data['mri_mask']]]).float().to(device) if 'MRI' in active_modalities else torch.zeros((1, 1)).to(device),
+                    torch.tensor([[data['cli_mask']]]).float().to(device) if 'Clinical' in active_modalities else torch.zeros((1, 1)).to(device),
                 ]
 
                 _, wsi_best, _ = mil_model.forward_single_bag(wsi_bag, 'WSI', add_noise=False)
@@ -273,7 +275,7 @@ def train_pipeline(
             best_val_bacc = val_bacc
             best_val_f1 = val_f1
             patience_counter = 0
-            ckpt_name = get_pipeline_ckpt_name(fusion_strategy)
+            ckpt_name = get_pipeline_ckpt_name_ablation(fusion_strategy, active_modalities)
             save_path = os.path.join(CHECKPOINT_DIR, ckpt_name)
             torch.save({
                 'mil_state_dict': mil_model.state_dict(),

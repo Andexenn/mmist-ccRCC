@@ -33,8 +33,12 @@ from models.Fusion.model import Fusion
 
 from trainer.stage1_trainer import train_stage1
 from trainer.stage2_trainer import train_pipeline
-from trainer.test_evaluator import evaluate_test_set
+from trainer.test_evaluator import evaluate_test_set, evaluate_individual_mil
+from trainer.MIL_trainer import train_mil_survival
 from prepare_data import prepare_dataset
+
+import itertools
+from configs.paths import get_recon_ckpt_name_ablation, get_fusion_ckpt_name_ablation, get_pipeline_ckpt_name_ablation, get_ablation_suffix
 
 
 def parse_args():
@@ -53,8 +57,10 @@ TensorBoard:
     )
 
     # Required
-    parser.add_argument('--stage', type=str, required=True, choices=['prepare', '1', '2', 'all', 'test'],
-                        help='Training stage: prepare (generate CSV), 1 (modules), 2 (finetune), all, or test (evaluate on test set)')
+    parser.add_argument('--stage', type=str, required=True, choices=['prepare', '1', '2', 'all', 'test', 'ablation'],
+                        help='Training stage: prepare (generate CSV), 1 (modules), 2 (finetune), all, test (eval), or ablation')
+    parser.add_argument('--ablation_mode', type=str, choices=['individual', '2_mod', '3_mod', 'all'],
+                        help='Which ablation to run. Only used if --stage ablation')
     parser.add_argument('--feature_dir', type=str, required=True,
                         help='Path to extracted features directory')
     parser.add_argument('--clinical_file', type=str, required=True,
@@ -261,6 +267,117 @@ def run_test(args):
     return test_results, fusion_results, pipeline_results
 
 
+def run_ablation(args):
+    """Run ablation studies directly matching the test flow: train on train+val, infer on test."""
+    logger = setup_logger('mmist')
+    device = args.device
+
+    logger.info("═" * 60)
+    logger.info("ABLATION MODE: Training on train+val, evaluating on test. Mode: %s", args.ablation_mode)
+    logger.info("═" * 60)
+
+    modes = []
+    if args.ablation_mode == 'individual':
+        modes = ['individual']
+    elif args.ablation_mode == '2_mod':
+        modes = ['2_mod']
+    elif args.ablation_mode == '3_mod':
+        modes = ['3_mod']
+    elif args.ablation_mode == 'all':
+        modes = ['individual', '2_mod', '3_mod']
+        
+    mil_model = MILModel(
+        feature_dir=args.feature_dir,
+        clinical_dir=args.clinical_file,
+        device=device,
+        dim=args.dim
+    )
+    
+    # Train MIL once using combined data
+    logger.info("─── Training MIL Models for Ablation Base ───")
+    train_mil_survival(mil_model, lr=args.mil_lr, train_split='train_val', val_split='test')
+    
+    all_ablation_results = []
+
+    if 'individual' in modes:
+        logger.info("=== Running Individual Modality Ablation (No Recon/Fusion) ===")
+        for mod in ['WSI', 'CT', 'MRI']:
+            ckpt_path = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality=mod))
+            if os.path.exists(ckpt_path):
+                mil_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+            res = evaluate_individual_mil(mil_model, args.clinical_file, args.feature_dir, mod, split='test')
+            all_ablation_results.append(res)
+            
+    combos = []
+    base_mods = ['WSI', 'CT', 'MRI', 'Clinical']
+    if '2_mod' in modes:
+        combos.extend(list(itertools.combinations(base_mods, 2)))
+    if '3_mod' in modes:
+        combos.extend(list(itertools.combinations(base_mods, 3)))
+        
+    for combo in combos:
+        active_modalities = list(combo)
+        logger.info("=" * 60)
+        logger.info("=== Running Ablation for Combination: %s ===", active_modalities)
+        logger.info("=" * 60)
+        
+        # Need to load reference MRI again for MIL baseline
+        ref_mil_path = os.path.join(CHECKPOINT_DIR, CKPT_MIL_FORMAT.format(modality='MRI'))
+        if os.path.exists(ref_mil_path):
+            mil_model.load_state_dict(torch.load(ref_mil_path, map_location=device))
+            
+        recon_model = ReconstructionModel(feature_dim=args.dim, hidden_dim=128).to(device)
+        from trainer.reconstruction_trainer import train_reconstruction_module
+        train_reconstruction_module(
+            mil_model=mil_model, recon_model=recon_model,
+            clinical_file=args.clinical_file, feature_dir=args.feature_dir,
+            n_epochs=args.recon_epochs, lr=args.recon_lr, batch_size=args.recon_batch_size,
+            train_split='train_val', val_split='test', active_modalities=active_modalities
+        )
+        
+        recon_ckpt_path = os.path.join(CHECKPOINT_DIR, get_recon_ckpt_name_ablation(active_modalities))
+        if os.path.exists(recon_ckpt_path):
+            recon_model.load_state_dict(torch.load(recon_ckpt_path, map_location=device))
+            
+        fusion_strategies = ALL_FUSION_STRATEGIES if args.fusion_strategy == 'all' else [args.fusion_strategy]
+        from trainer.fusion_trainer import train_fuse_module
+        
+        for strategy in fusion_strategies:
+            fusion_model = Fusion(fusion_strategy=strategy, input_dims=[args.dim]*4, num_modalities=4).to(device)
+            train_fuse_module(
+                mil_model, recon_model, fusion_model, args.clinical_file, args.feature_dir,
+                strategy, args.fusion_epochs, args.fusion_lr, train_split='train_val', val_split='test',
+                active_modalities=active_modalities
+            )
+            
+            fusion_ckpt_path = os.path.join(CHECKPOINT_DIR, get_fusion_ckpt_name_ablation(strategy, active_modalities))
+            if os.path.exists(fusion_ckpt_path):
+                fusion_model.load_state_dict(torch.load(fusion_ckpt_path, map_location=device))
+                
+            from trainer.stage2_trainer import train_pipeline
+            train_pipeline(
+                mil_model, recon_model, fusion_model, args.clinical_file, args.feature_dir,
+                strategy, epochs=args.pipeline_epochs, lr=args.pipeline_lr, train_split='train_val', val_split='test',
+                active_modalities=active_modalities
+            )
+            
+            pipeline_ckpt_path = os.path.join(CHECKPOINT_DIR, get_pipeline_ckpt_name_ablation(strategy, active_modalities))
+            if os.path.exists(pipeline_ckpt_path):
+                ckpt = torch.load(pipeline_ckpt_path, map_location=device)
+                mil_model.load_state_dict(ckpt['mil_state_dict'])
+                recon_model.load_state_dict(ckpt['recon_state_dict'])
+                fusion_model.load_state_dict(ckpt['fusion_state_dict'])
+            
+            res = evaluate_test_set(
+                mil_model, recon_model, fusion_model, args.clinical_file, args.feature_dir,
+                strategy, active_modalities=active_modalities
+            )
+            res['strategy'] = f"{strategy}_{get_ablation_suffix(active_modalities)}"
+            all_ablation_results.append(res)
+            
+    return all_ablation_results
+
+
 def main():
     args = parse_args()
 
@@ -331,6 +448,14 @@ def main():
     if args.stage == 'test':
         test_results, fusion_results, pipeline_results = run_test(args)
 
+    # ─── Ablation ────────────────────────────────────────────────
+    ablation_results = []
+    if args.stage == 'ablation':
+        if not args.ablation_mode:
+            logger.error("--ablation_mode is required when --stage ablation is used!")
+            sys.exit(1)
+        ablation_results = run_ablation(args)
+
     # ─── Final Summary ───────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("ALL TRAINING COMPLETE")
@@ -362,6 +487,15 @@ def main():
         logger.info("  " + "-" * 65)
         for r in test_results:
             logger.info("  %-15s | %-10.4f | %-10.4f | %-10.4f | %-8d",
+                        r['strategy'], r['test_loss'], r['test_bacc'], r['test_f1'], r['test_samples'])
+                        
+    if ablation_results:
+        logger.info("─" * 60)
+        logger.info("  ABLATION SET — Results:")
+        logger.info("  %-35s | %-10s | %-10s | %-10s | %-8s", "Ablation Run", "Test Loss", "Test BAcc", "Test F1", "Samples")
+        logger.info("  " + "-" * 85)
+        for r in ablation_results:
+            logger.info("  %-35s | %-10.4f | %-10.4f | %-10.4f | %-8d",
                         r['strategy'], r['test_loss'], r['test_bacc'], r['test_f1'], r['test_samples'])
 
     logger.info("=" * 60)

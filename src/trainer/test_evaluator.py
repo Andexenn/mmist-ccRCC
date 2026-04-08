@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 from configs.logging_config import get_logger
-from configs.paths import get_test_tb_dir
+from configs.paths import get_test_tb_dir, get_test_tb_dir_ablation
 from models.Fusion.model import Fusion
 from models.MIL.model import MILModel
 from models.Reconstruction.model import ReconstructionModel
@@ -23,6 +23,71 @@ from dataset.reconstruct_dataset import get_reconstruct_dataloader
 from utils.metrics import calc_bacc, calc_macro_f1
 
 logger = get_logger('test_evaluator')
+
+
+def evaluate_individual_mil(mil_model: MILModel, clinical_file: str, feature_dir: str, modality: str, split: str = 'test'):
+    """Evaluate individual MIL directly."""
+    logger.info("=" * 60)
+    logger.info("TEST EVALUATION INDIVIDUAL MIL: %s", modality)
+    
+    mil_model.eval()
+    device = next(mil_model.parameters()).device
+    
+    # Use MIL dataloader for this modality directly
+    loaders = mil_model._get_dataloader(split=split, shuffle=False)
+    if modality == 'WSI':
+        loader = loaders[0]
+    elif modality == 'CT':
+        loader = loaders[1]
+    elif modality == 'MRI':
+        loader = loaders[2]
+    else:
+        logger.warning(f"No individual MIL available for {modality}")
+        return {'strategy': f'individual_{modality}', 'test_loss': 0.0, 'test_bacc': 0.0, 'test_f1': 0.0, 'test_samples': 0}
+
+    criterion = nn.BCELoss(reduction='none')
+    
+    test_loss = 0.0
+    test_steps = 0
+    all_test_preds = []
+    all_test_labels = []
+    
+    with torch.no_grad():
+        for patient_id, feature_list, label, mask in loader:
+            if mask.item() == 0:
+                continue
+            feature_list = [f.to(device) for f in feature_list]
+            label = label.float().to(device).unsqueeze(0)
+            
+            prob, _, _ = mil_model.forward_single_bag(feature_list, modality=modality, add_noise=False)
+            
+            loss = criterion(prob, label)
+            test_loss += loss.item()
+            test_steps += 1
+            all_test_preds.append((prob > 0.5).int().cpu())
+            all_test_labels.append(label.int().cpu())
+            
+    avg_test_loss = test_loss / test_steps if test_steps > 0 else 0.0
+    
+    if all_test_preds:
+        test_preds_cat = torch.cat(all_test_preds)
+        test_labels_cat = torch.cat(all_test_labels)
+        test_bacc = calc_bacc(test_labels_cat, test_preds_cat)
+        test_f1 = calc_macro_f1(test_labels_cat, test_preds_cat)
+    else:
+        test_bacc, test_f1 = 0.0, 0.0
+        
+    logger.info(
+        "[TEST] [MIL_%s] loss=%.4f | bacc=%.4f | f1=%.4f | samples=%d",
+        modality, avg_test_loss, test_bacc, test_f1, test_steps
+    )
+    return {
+        'strategy': f'individual_{modality}',
+        'test_loss': avg_test_loss,
+        'test_bacc': test_bacc,
+        'test_f1': test_f1,
+        'test_samples': test_steps,
+    }
 
 
 def evaluate_test_set(
@@ -33,6 +98,7 @@ def evaluate_test_set(
     feature_dir: str,
     fusion_strategy: str = 'early_mean',
     bacc_mods: List = [1.0, 1.0, 1.0, 1.0],
+    active_modalities: List[str] = ['WSI', 'CT', 'MRI', 'Clinical'],
 ):
     """
     Evaluate the full pipeline on the test split.
@@ -41,11 +107,12 @@ def evaluate_test_set(
     Results are logged to TensorBoard and returned as a dict.
     """
     logger.info("=" * 60)
-    logger.info("TEST EVALUATION: %s", fusion_strategy)
+    logger.info("TEST EVALUATION: %s | Active Modalities: %s", fusion_strategy, active_modalities)
     logger.info("=" * 60)
 
-    tb_dir = get_test_tb_dir(fusion_strategy)
+    tb_dir = get_test_tb_dir_ablation(fusion_strategy, active_modalities)
     os.makedirs(tb_dir, exist_ok=True)
+
     writer = SummaryWriter(log_dir=tb_dir)
     device = next(fusion_model.parameters()).device
 
@@ -95,10 +162,10 @@ def evaluate_test_set(
                 continue
 
             masks = [
-                torch.tensor([[data['wsi_mask']]]).float().to(device),
-                torch.tensor([[data['ct_mask']]]).float().to(device),
-                torch.tensor([[data['mri_mask']]]).float().to(device),
-                torch.tensor([[data['cli_mask']]]).float().to(device),
+                torch.tensor([[data['wsi_mask']]]).float().to(device) if 'WSI' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['ct_mask']]]).float().to(device) if 'CT' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['mri_mask']]]).float().to(device) if 'MRI' in active_modalities else torch.zeros((1, 1)).to(device),
+                torch.tensor([[data['cli_mask']]]).float().to(device) if 'Clinical' in active_modalities else torch.zeros((1, 1)).to(device),
             ]
 
             # ─── MIL Selection ───────────────────────────────────
